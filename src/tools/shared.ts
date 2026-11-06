@@ -1,5 +1,13 @@
 import type { CallToolResult } from "@modelcontextprotocol/server";
 import * as z from "zod";
+import {
+  ACTIVITIES,
+  ACTIVITY_PRESETS,
+  DEFAULT_MIN_WIND_KN,
+  resolveWindRange,
+  type Activity,
+  type ActivityPreset,
+} from "../domain/activities.js";
 import { ATTRIBUTION } from "../domain/disclaimers.js";
 import { COMPASS_POINTS } from "../domain/units.js";
 import type { ResolvedLocation } from "../openmeteo/client.js";
@@ -81,6 +89,56 @@ export const compassDirections = z
     'Only accept wind coming FROM these 16-point compass directions, e.g. ["W","WSW","SW"] ' +
       "for a beach facing south-west. Omit to accept any direction.",
   );
+
+const presetList = ACTIVITIES.map((key) => {
+  const p: ActivityPreset = ACTIVITY_PRESETS[key];
+  return `${key} = ${p.minWindKn}${p.maxWindKn ? `-${p.maxWindKn}` : "+"} kn`;
+}).join(", ");
+
+/** Wind range inputs shared by find_wind_windows, compare_locations and get_weather_summary. */
+export const windCriteriaFields = {
+  activity: z
+    .enum(ACTIVITIES)
+    .optional()
+    .describe(
+      `Preset wind range for an activity (${presetList}). ` +
+        "Explicit min/max/gust values override the preset.",
+    ),
+  min_wind_knots: z
+    .number()
+    .min(0)
+    .max(60)
+    .optional()
+    .describe(
+      `Minimum sustained wind in knots. Defaults to the activity preset, or ${DEFAULT_MIN_WIND_KN} kn.`,
+    ),
+  max_wind_knots: z
+    .number()
+    .min(1)
+    .max(80)
+    .optional()
+    .describe("Maximum sustained wind in knots. Defaults to the activity preset, or no upper limit."),
+  max_gust_knots: z
+    .number()
+    .min(1)
+    .max(100)
+    .optional()
+    .describe("Reject hours whose gusts exceed this, in knots."),
+};
+
+export function windRangeFrom(args: {
+  activity?: Activity | undefined;
+  min_wind_knots?: number | undefined;
+  max_wind_knots?: number | undefined;
+  max_gust_knots?: number | undefined;
+}) {
+  return resolveWindRange({
+    activity: args.activity,
+    minWindKn: args.min_wind_knots,
+    maxWindKn: args.max_wind_knots,
+    maxGustKn: args.max_gust_knots,
+  });
+}
 
 export function assertHourRange(start: number, end: number) {
   if (end <= start) throw new RangeError(`end_hour (${end}) must be after start_hour (${start}).`);

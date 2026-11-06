@@ -8,9 +8,11 @@ import { dateOf, inHourRange, resolveDay } from "../domain/time.js";
 import { findWindWindows, summarizeWindByDay } from "../domain/wind.js";
 import { describeWeatherCode, isThunderstorm } from "../domain/weatherCodes.js";
 import type { MarineForecast, WeatherService } from "../openmeteo/client.js";
-import { bestWindow, windCriteriaFields } from "./findWindWindows.js";
+import { bestWindow } from "./findWindWindows.js";
 import {
   READ_ONLY,
+  windCriteriaFields,
+  windRangeFrom,
   assertHourRange,
   compassDirections,
   daySelector,
@@ -26,7 +28,6 @@ import {
 const inputSchema = withLocation({
   day: daySelector,
   ...windCriteriaFields,
-  min_wind_knots: windCriteriaFields.min_wind_knots.default(12),
   start_hour: startHour(9),
   end_hour: endHour(18),
   directions: compassDirections,
@@ -48,6 +49,7 @@ export function registerGetWeatherSummary(server: McpServer, service: WeatherSer
         "One-call briefing for a water-sports day at a place: weather, temperature range, rain and " +
         "thunderstorm risk, wind summary and best wind window, waves and sea state, and a " +
         "go / marginal / no_go verdict with reasons. Combines the weather and marine forecasts. " +
+        "Set activity (e.g. dinghy_sailing) to judge the day for that wind range. " +
         "Start here for 'should I go out tomorrow?' questions.",
       inputSchema,
       annotations: READ_ONLY,
@@ -55,6 +57,7 @@ export function registerGetWeatherSummary(server: McpServer, service: WeatherSer
     safely(async ({ day, location: name, latitude, longitude, ...criteriaArgs }) => {
       const { start_hour, end_hour } = criteriaArgs;
       assertHourRange(start_hour, end_hour);
+      const range = windRangeFrom(criteriaArgs);
 
       const location = await service.resolveLocation({ location: name, latitude, longitude });
       const days = day === "today" ? 1 : day === "tomorrow" ? 2 : 16;
@@ -78,9 +81,9 @@ export function registerGetWeatherSummary(server: McpServer, service: WeatherSer
       }
 
       const windows = findWindWindows(session, {
-        minWindKn: criteriaArgs.min_wind_knots,
-        maxWindKn: criteriaArgs.max_wind_knots,
-        maxGustKn: criteriaArgs.max_gust_knots,
+        minWindKn: range.minWindKn,
+        maxWindKn: range.maxWindKn,
+        maxGustKn: range.maxGustKn,
         startHour: start_hour,
         endHour: end_hour,
         directions: criteriaArgs.directions,
@@ -96,8 +99,8 @@ export function registerGetWeatherSummary(server: McpServer, service: WeatherSer
       const { verdict, reasons } = sessionVerdict({
         windows,
         maxWindKn: wind?.maxWindKn ?? null,
-        minWindKn: criteriaArgs.min_wind_knots,
-        maxWindLimitKn: criteriaArgs.max_wind_knots,
+        minWindKn: range.minWindKn,
+        maxWindLimitKn: range.maxWindKn,
         thunderstormHours,
         waves: marineDay?.assessment ?? null,
       });
@@ -106,6 +109,8 @@ export function registerGetWeatherSummary(server: McpServer, service: WeatherSer
         location: describeLocation(location, weather.timezone),
         date,
         hours: { start: start_hour, end: end_hour, note: "Local time; end is exclusive." },
+        activity: range.activity,
+        windRangeKn: { min: range.minWindKn, max: range.maxWindKn ?? null, maxGust: range.maxGustKn ?? null },
         verdict,
         reasons,
         weather: {

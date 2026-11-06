@@ -6,7 +6,6 @@ import { max, mean } from "../domain/stats.js";
 import { dateOf, inHourRange, resolveDay } from "../domain/time.js";
 import { dominantDirection, findWindWindows, type WindCriteria } from "../domain/wind.js";
 import type { WeatherService } from "../openmeteo/client.js";
-import { windCriteriaFields } from "./findWindWindows.js";
 import {
   READ_ONLY,
   assertHourRange,
@@ -16,6 +15,8 @@ import {
   jsonResult,
   safely,
   startHour,
+  windCriteriaFields,
+  windRangeFrom,
 } from "./shared.js";
 
 const inputSchema = z.object({
@@ -26,7 +27,6 @@ const inputSchema = z.object({
     .describe('2-5 place names to compare, e.g. ["Bucerias, Mexico", "La Cruz de Huanacaxtle"].'),
   day: daySelector,
   ...windCriteriaFields,
-  min_wind_knots: windCriteriaFields.min_wind_knots.default(12),
   start_hour: startHour(9),
   end_hour: endHour(18),
   include_marine: z
@@ -92,16 +92,18 @@ export function registerCompareLocations(server: McpServer, service: WeatherServ
       description:
         "Compare wind (and optionally waves) across 2-5 places for one day and rank them for a session. " +
         "Ranking: most hours within the wind range, then longest continuous window, then steadier wind, " +
-        "then smaller waves. Use for 'Bucerias or La Cruz tomorrow?' questions.",
+        "then smaller waves. Set activity (e.g. dinghy_sailing) to rank for that wind range. " +
+        "Use for 'Bucerias or La Cruz tomorrow?' questions.",
       inputSchema,
       annotations: READ_ONLY,
     },
     safely(async (args) => {
       assertHourRange(args.start_hour, args.end_hour);
+      const range = windRangeFrom(args);
       const criteria: WindCriteria = {
-        minWindKn: args.min_wind_knots,
-        maxWindKn: args.max_wind_knots,
-        maxGustKn: args.max_gust_knots,
+        minWindKn: range.minWindKn,
+        maxWindKn: range.maxWindKn,
+        maxGustKn: range.maxGustKn,
         startHour: args.start_hour,
         endHour: args.end_hour,
         minWindowHours: 1,
@@ -129,7 +131,8 @@ export function registerCompareLocations(server: McpServer, service: WeatherServ
       return jsonResult({
         date: scores[0]!.date,
         hours: { start: args.start_hour, end: args.end_hour },
-        windRangeKn: { min: args.min_wind_knots, max: args.max_wind_knots ?? null },
+        activity: range.activity,
+        windRangeKn: { min: range.minWindKn, max: range.maxWindKn ?? null, maxGust: range.maxGustKn ?? null },
         ranking: rankLocations(scores),
         ...(failures.length > 0 && { failures }),
         notes: [...sameCell, FORECAST_CAVEAT, ...(args.include_marine ? [MARINE_CAVEAT] : [])],

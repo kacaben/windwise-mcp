@@ -53,8 +53,51 @@ describe("WindWise MCP server", () => {
       expect(tool.description!.length).toBeGreaterThan(50);
       expect(tool.annotations?.readOnlyHint).toBe(true);
     }
-    const windows = tools.find((t) => t.name === "find_wind_windows")!;
-    expect(windows.inputSchema.required).toContain("min_wind_knots");
+    // The activity presets are advertised to the model in all three wind-range tools.
+    for (const name of ["find_wind_windows", "compare_locations", "get_weather_summary"]) {
+      const schema = tools.find((t) => t.name === name)!.inputSchema as {
+        properties: Record<string, { enum?: string[]; description?: string }>;
+      };
+      expect(schema.properties.activity?.enum).toEqual(["wing_foiling", "dinghy_sailing"]);
+      expect(schema.properties.activity?.description).toContain("dinghy_sailing = 10-18 kn");
+    }
+  });
+
+  it("find_wind_windows uses the dinghy_sailing preset (10-18 kn)", async () => {
+    const weather = weatherDay("2026-11-07", { 10: 8, 11: 11, 12: 14, 13: 19, 14: 17, 15: 16, 16: 12 });
+    const c = await connect(fakeService({ weather }));
+    const { data } = await call(c, "find_wind_windows", { location: "Bucerias", activity: "dinghy_sailing" });
+
+    expect(data.criteria).toMatchObject({ activity: "Dinghy sailing", minWindKn: 10, maxWindKn: 18 });
+    // 10:00 is too light and 13:00 is too strong, so the day splits into two windows.
+    expect(data.windows.map((w: { start: string; durationHours: number }) => [w.start, w.durationHours])).toEqual([
+      ["2026-11-07T11:00", 2],
+      ["2026-11-07T14:00", 3],
+    ]);
+  });
+
+  it("explicit knots override the activity preset", async () => {
+    const weather = weatherDay("2026-11-07", { 12: 14, 13: 19, 14: 17 });
+    const c = await connect(fakeService({ weather }));
+    const { data } = await call(c, "find_wind_windows", {
+      location: "Bucerias",
+      activity: "dinghy_sailing",
+      max_wind_knots: 20,
+    });
+    expect(data.criteria).toMatchObject({ minWindKn: 10, maxWindKn: 20 });
+    expect(data.bestWindow).toMatchObject({ start: "2026-11-07T12:00", durationHours: 3 });
+  });
+
+  it("get_weather_summary says too windy for dinghy sailing on a 25 kn day", async () => {
+    const weather = weatherDay("2026-11-07", { 9: 22, 10: 24, 11: 25, 12: 25, 13: 24, 14: 23, 15: 22, 16: 21, 17: 20 });
+    const c = await connect(fakeService({ weather, marine: marineDay("2026-11-07", 0.6) }));
+    const { data } = await call(c, "get_weather_summary", {
+      location: "Bucerias",
+      day: "2026-11-07",
+      activity: "dinghy_sailing",
+    });
+    expect(data).toMatchObject({ activity: "Dinghy sailing", windRangeKn: { min: 10, max: 18 }, verdict: "no_go" });
+    expect(data.reasons[0]).toMatch(/Too windy: up to 25 kn, above the 18 kn limit/);
   });
 
   it("find_wind_windows returns the windows and the best one", async () => {

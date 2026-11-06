@@ -20,28 +20,10 @@ import {
   jsonResult,
   safely,
   startHour,
+  windCriteriaFields,
+  windRangeFrom,
   withLocation,
 } from "./shared.js";
-
-export const windCriteriaFields = {
-  min_wind_knots: z
-    .number()
-    .min(0)
-    .max(60)
-    .describe("Minimum sustained wind in knots, e.g. 12 for wing foiling on a mid-size wing."),
-  max_wind_knots: z
-    .number()
-    .min(1)
-    .max(80)
-    .optional()
-    .describe("Maximum sustained wind in knots; omit for no upper limit."),
-  max_gust_knots: z
-    .number()
-    .min(1)
-    .max(100)
-    .optional()
-    .describe("Reject hours whose gusts exceed this, in knots."),
-};
 
 const inputSchema = withLocation({
   ...windCriteriaFields,
@@ -81,27 +63,26 @@ export function registerFindWindWindows(server: McpServer, service: WeatherServi
     {
       title: "Find rideable wind windows",
       description:
-        "Find continuous time windows when the wind matches a rider's criteria (min/max knots, max gusts, " +
-        "allowed directions, time of day). Returns each window with its average/peak wind and direction, " +
-        "the best window, and, when nothing matches, why each hour was rejected. Use for questions like " +
-        "'will there be enough wind for wing foiling tomorrow?'.",
+        "Find continuous time windows when the wind matches the criteria: an activity preset " +
+        "(e.g. dinghy_sailing) or explicit min/max knots and max gusts, plus allowed directions and " +
+        "time of day. Returns each window with its average/peak wind and direction, the best window, " +
+        "and, when nothing matches, why each hour was rejected. Use for questions like " +
+        "'will there be enough wind for wing foiling tomorrow?' or 'when can I go dinghy sailing this week?'.",
       inputSchema,
       annotations: READ_ONLY,
     },
     safely(async (args) => {
       const { location: _l, latitude: _a, longitude: _o, ...rest } = args;
       assertHourRange(rest.start_hour, rest.end_hour);
-      if (rest.max_wind_knots !== undefined && rest.max_wind_knots < rest.min_wind_knots) {
-        throw new RangeError("max_wind_knots must be greater than or equal to min_wind_knots.");
-      }
+      const range = windRangeFrom(rest);
 
       const location = await service.resolveLocation(args);
       const forecast = await service.getWeather(location, rest.days);
 
       const criteria: WindCriteria = {
-        minWindKn: rest.min_wind_knots,
-        maxWindKn: rest.max_wind_knots,
-        maxGustKn: rest.max_gust_knots,
+        minWindKn: range.minWindKn,
+        maxWindKn: range.maxWindKn,
+        maxGustKn: range.maxGustKn,
         startHour: rest.start_hour,
         endHour: rest.end_hour,
         directions: rest.directions,
@@ -120,7 +101,18 @@ export function registerFindWindWindows(server: McpServer, service: WeatherServi
 
       return jsonResult({
         location: describeLocation(location, forecast.timezone),
-        criteria: rest,
+        criteria: {
+          activity: range.activity,
+          minWindKn: range.minWindKn,
+          maxWindKn: range.maxWindKn ?? null,
+          maxGustKn: range.maxGustKn ?? null,
+          startHour: rest.start_hour,
+          endHour: rest.end_hour,
+          days: rest.days,
+          directions: rest.directions ?? null,
+          minWindowHours: rest.min_window_hours,
+          excludeThunderstorms: rest.exclude_thunderstorms,
+        },
         found: windows.length > 0,
         windowCount: windows.length,
         totalRideableHours: windows.reduce((sum, w) => sum + w.durationHours, 0),

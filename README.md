@@ -39,6 +39,21 @@ Agent:  → get_weather_summary { location: "Bucerias, Mexico", day: "tomorrow" 
 All tools are read-only (`readOnlyHint`), validate their input with Zod, return both text and
 `structuredContent`, and include Open-Meteo attribution and a forecast caveat.
 
+### Activity presets
+
+`find_wind_windows`, `compare_locations` and `get_weather_summary` accept an `activity`
+instead of raw knots. Any explicit `min_wind_knots`, `max_wind_knots` or `max_gust_knots`
+overrides the preset.
+
+| `activity` | Wind range |
+|---|---|
+| `wing_foiling` | 12 kn and up |
+| `dinghy_sailing` | 10–18 kn |
+
+With no activity and no `min_wind_knots`, the minimum defaults to 12 kn. To add a preset,
+add one line to `ACTIVITY_PRESETS` in `src/domain/activities.ts`. The tool schemas and
+descriptions pick it up automatically.
+
 ### Example: `find_wind_windows`
 
 ```jsonc
@@ -109,6 +124,7 @@ src/
 │   ├── marine.ts          #   assessWaves, summarizeMarineByDay
 │   ├── summary.ts         #   sessionVerdict (go / marginal / no_go)
 │   ├── compare.ts         #   rankLocations, sharedGridCells
+│   ├── activities.ts      #   activity presets (wing foiling, dinghy sailing)
 │   ├── units.ts           #   compass, circular mean, Beaufort, conversions
 │   └── time.ts            #   time-zone-safe local time helpers
 └── openmeteo/             # integration layer
@@ -185,6 +201,7 @@ Then try asking:
 - *"Will there be enough wind for wing foiling in Bucerías tomorrow?"*
 - *"Show me the wind forecast for the next three days between 10 AM and 5 PM."*
 - *"Find 2-hour windows of 15–25 knots from the west in Cabarete this week."*
+- *"When could I go dinghy sailing in Bucerías this week?"*
 - *"Compare Bucerías, La Cruz de Huanacaxtle and Sayulita for tomorrow afternoon."*
 - *"Are the waves likely to be manageable for a beginner in Sayulita?"*
 

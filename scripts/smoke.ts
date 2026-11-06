@@ -14,6 +14,7 @@ const calls: Array<[name: string, args: Record<string, unknown>]> = [
   ["get_wind_forecast", { location: "Bucerias, Mexico", days: 2, start_hour: 10, end_hour: 17 }],
   ["get_marine_conditions", { location: "Bucerias, Mexico", days: 1 }],
   ["find_wind_windows", { location: "Bucerias, Mexico", min_wind_knots: 10, max_gust_knots: 25 }],
+  ["find_wind_windows", { location: "Bucerias, Mexico", activity: "dinghy_sailing", days: 7 }],
   ["compare_locations", { locations: ["Bucerias, Mexico", "La Cruz de Huanacaxtle", "Sayulita"], day: "tomorrow" }],
   ["get_weather_summary", { location: "Bucerias, Mexico", day: "tomorrow" }],
   // Expected to fail gracefully:
