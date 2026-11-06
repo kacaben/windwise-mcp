@@ -1,4 +1,5 @@
-import { columnsToRows, type Columns } from "./columns.js";
+import { localHourNow } from "../domain/time.js";
+import { type Columns, columnsToRows } from "./columns.js";
 import { getJson, type HttpOptions } from "./http.js";
 
 const MARINE_URL = "https://marine-api.open-meteo.com/v1/marine";
@@ -35,6 +36,8 @@ export interface MarineForecast {
   latitude: number;
   longitude: number;
   timezone: string;
+  /** Start of the current local hour; hours before it have already passed. */
+  currentHour: string;
   hours: MarineHour[];
 }
 
@@ -42,6 +45,7 @@ interface MarineResponse {
   latitude: number;
   longitude: number;
   timezone: string;
+  utc_offset_seconds: number;
   hourly: Columns;
 }
 
@@ -97,6 +101,8 @@ export async function fetchMarineForecast(
     latitude: response.latitude,
     longitude: response.longitude,
     timezone: response.timezone,
+    // The marine API has no "current" block, so derive local now from the offset.
+    currentHour: localHourNow(response.utc_offset_seconds),
     hours,
   };
 }

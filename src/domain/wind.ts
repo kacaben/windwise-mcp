@@ -1,12 +1,6 @@
 import { groupBy, max, mean, present } from "./stats.js";
 import { addHours, dateOf, inHourRange } from "./time.js";
-import {
-  beaufort,
-  circularMeanDegrees,
-  degreesToCompass,
-  round,
-  type CompassPoint,
-} from "./units.js";
+import { beaufort, type CompassPoint, circularMeanDegrees, degreesToCompass, round } from "./units.js";
 import { isThunderstorm } from "./weatherCodes.js";
 
 /** The minimum an hour needs for wind analysis. `WeatherHour` satisfies it. */
@@ -17,6 +11,9 @@ export interface WindSample {
   windDirectionDeg: number | null;
   weatherCode?: number | null;
 }
+
+/** Shortest stretch worth rigging up for. Shared by every tool so they agree. */
+export const DEFAULT_MIN_WINDOW_HOURS = 2;
 
 export interface WindCriteria {
   minWindKn: number;
@@ -152,11 +149,7 @@ export interface DailyWind {
 }
 
 /** Per-day wind rollup restricted to an hour range (e.g. daylight 9–18). */
-export function summarizeWindByDay(
-  hours: readonly WindSample[],
-  startHour = 0,
-  endHour = 24,
-): DailyWind[] {
+export function summarizeWindByDay(hours: readonly WindSample[], startHour = 0, endHour = 24): DailyWind[] {
   const inRange = hours.filter((h) => inHourRange(h.time, startHour, endHour));
   return [...groupBy(inRange, (h) => dateOf(h.time))].map(([date, dayHours]) => {
     const peak = dayHours.reduce<WindSample | null>(

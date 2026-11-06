@@ -1,18 +1,21 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod";
-import { rankLocations, sharedGridCells, type LocationScore } from "../domain/compare.js";
+import { type LocationScore, rankLocations, sharedGridCells } from "../domain/compare.js";
 import { FORECAST_CAVEAT, MARINE_CAVEAT } from "../domain/disclaimers.js";
+import { ToolInputError } from "../domain/errors.js";
+import { selectSessionHours } from "../domain/session.js";
 import { max, mean } from "../domain/stats.js";
-import { dateOf, inHourRange, resolveDay } from "../domain/time.js";
+import { dateOf, forecastDaysFor, resolveDay } from "../domain/time.js";
 import { dominantDirection, findWindWindows, type WindCriteria } from "../domain/wind.js";
 import type { WeatherService } from "../openmeteo/client.js";
+import { compareLocationsOutput as outputSchema } from "./outputs.js";
 import {
-  READ_ONLY,
   assertHourRange,
   daySelector,
   endHour,
   errorMessage,
   jsonResult,
+  READ_ONLY,
   safely,
   startHour,
   windCriteriaFields,
@@ -44,14 +47,16 @@ async function scoreLocation(
   criteria: WindCriteria,
 ): Promise<LocationScore & { date: string; resolvedAs: string; gridPoint: string }> {
   const location = await service.resolveLocation({ location: name });
-  // "tomorrow" needs 2 days; an explicit date may be up to 15 days out.
-  const days = args.day === "today" ? 1 : args.day === "tomorrow" ? 2 : 16;
-  const forecast = await service.getWeather(location, days);
+  const days = forecastDaysFor(args.day);
+  const forecast = await service.getWeather(location, { days, cell: "sea" });
   const date = resolveDay(args.day, dateOf(forecast.hours[0]!.time));
-  const dayHours = forecast.hours.filter(
-    (h) => dateOf(h.time) === date && inHourRange(h.time, args.start_hour, args.end_hour),
-  );
-  if (dayHours.length === 0) throw new RangeError(`No forecast available for ${date}.`);
+  const session = {
+    date,
+    startHour: args.start_hour,
+    endHour: args.end_hour,
+    currentHour: forecast.currentHour,
+  };
+  const dayHours = selectSessionHours(forecast.hours, session);
 
   const windows = findWindWindows(dayHours, criteria);
 
@@ -59,11 +64,7 @@ async function scoreLocation(
   if (args.include_marine) {
     try {
       const marine = await service.getMarine(location, days);
-      maxWaveHeightM = max(
-        marine.hours
-          .filter((h) => dateOf(h.time) === date && inHourRange(h.time, args.start_hour, args.end_hour))
-          .map((h) => h.waveHeightM),
-      );
+      maxWaveHeightM = max(selectSessionHours(marine.hours, session).map((h) => h.waveHeightM));
     } catch {
       // Marine data is a bonus here; an inland spot still gets a wind ranking.
     }
@@ -91,10 +92,11 @@ export function registerCompareLocations(server: McpServer, service: WeatherServ
       title: "Compare spots",
       description:
         "Compare wind (and optionally waves) across 2-5 places for one day and rank them for a session. " +
-        "Ranking: most hours within the wind range, then longest continuous window, then steadier wind, " +
+        "Ranking: most hours in usable windows, then longest continuous window, then steadier wind, " +
         "then smaller waves. Set activity (e.g. dinghy_sailing) to rank for that wind range. " +
         "Use for 'Bucerias or La Cruz tomorrow?' questions.",
       inputSchema,
+      outputSchema,
       annotations: READ_ONLY,
     },
     safely(async (args) => {
@@ -106,7 +108,7 @@ export function registerCompareLocations(server: McpServer, service: WeatherServ
         maxGustKn: range.maxGustKn,
         startHour: args.start_hour,
         endHour: args.end_hour,
-        minWindowHours: 1,
+        minWindowHours: args.min_window_hours,
         excludeThunderstorms: true,
       };
 
@@ -116,10 +118,12 @@ export function registerCompareLocations(server: McpServer, service: WeatherServ
       );
       const scores = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
       const failures = settled.flatMap((r, i) =>
-        r.status === "rejected" ? [{ location: args.locations[i], error: errorMessage(r.reason) }] : [],
+        r.status === "rejected" ? [{ location: args.locations[i]!, error: errorMessage(r.reason) }] : [],
       );
       if (scores.length === 0) {
-        throw new Error(`None of the locations could be compared: ${failures.map((f) => f.error).join(" ")}`);
+        throw new ToolInputError(
+          `None of the locations could be compared: ${failures.map((f) => f.error).join(" ")}`,
+        );
       }
 
       const sameCell = sharedGridCells(scores).map(
@@ -128,11 +132,16 @@ export function registerCompareLocations(server: McpServer, service: WeatherServ
           "identical; the model cannot tell them apart. Local knowledge decides between them.",
       );
 
-      return jsonResult({
+      return jsonResult(outputSchema, {
         date: scores[0]!.date,
         hours: { start: args.start_hour, end: args.end_hour },
         activity: range.activity,
-        windRangeKn: { min: range.minWindKn, max: range.maxWindKn ?? null, maxGust: range.maxGustKn ?? null },
+        windRangeKn: {
+          min: range.minWindKn,
+          max: range.maxWindKn ?? null,
+          maxGust: range.maxGustKn ?? null,
+          minWindowHours: args.min_window_hours,
+        },
         ranking: rankLocations(scores),
         ...(failures.length > 0 && { failures }),
         notes: [...sameCell, FORECAST_CAVEAT, ...(args.include_marine ? [MARINE_CAVEAT] : [])],

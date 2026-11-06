@@ -31,12 +31,16 @@ interface GeocodingResponse {
 }
 
 export class LocationNotFoundError extends Error {
-  constructor(query: string) {
+  override name = "LocationNotFoundError";
+
+  /** @param candidates places with the right name that didn't match the region/country given */
+  constructor(query: string, candidates: readonly string[] = []) {
     super(
-      `Could not find a place called "${query}". Try a nearby town name, add the country ` +
-        `(e.g. "Bucerias, Mexico"), or pass latitude/longitude instead.`,
+      candidates.length > 0
+        ? `No place called "${query}". Did you mean: ${candidates.join("; ")}?`
+        : `Could not find a place called "${query}". Try a nearby town name, add the country ` +
+            `(e.g. "Bucerias, Mexico"), or pass latitude/longitude instead.`,
     );
-    this.name = "LocationNotFoundError";
   }
 }
 
@@ -59,21 +63,28 @@ export function parseLocationQuery(query: string): { name: string; qualifiers: s
   return { name, qualifiers: rest.filter(Boolean).map(normalize) };
 }
 
-function matchesQualifiers(result: GeocodingResult, qualifiers: string[]): boolean {
-  const fields = [result.country, result.country_code, result.admin1, result.admin2, result.admin3]
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * A qualifier matches a country code exactly, or a country/region name as whole
+ * words. Substring matching is wrong: "us" is inside "australia".
+ */
+export function matchesQualifier(result: GeocodingResult, qualifier: string): boolean {
+  if (result.country_code && normalize(result.country_code) === qualifier) return true;
+  const wholeWords = new RegExp(`(^|[^a-z0-9])${escapeRegExp(qualifier)}($|[^a-z0-9])`);
+  return [result.country, result.admin1, result.admin2, result.admin3]
     .filter((field): field is string => Boolean(field))
-    .map(normalize);
-  return qualifiers.every((qualifier) =>
-    fields.some((field) => field === qualifier || field.includes(qualifier)),
-  );
+    .some((field) => wholeWords.test(normalize(field)));
 }
+
+const describeResult = (r: GeocodingResult) => [r.name, r.admin1, r.country].filter(Boolean).join(", ");
 
 export function pickBestResult(
   results: GeocodingResult[],
   qualifiers: string[],
 ): GeocodingResult | undefined {
   // Open-Meteo already ranks by relevance/population; keep that order.
-  return results.find((result) => matchesQualifiers(result, qualifiers));
+  return results.find((result) => qualifiers.every((q) => matchesQualifier(result, q)));
 }
 
 function toResolved(result: GeocodingResult): ResolvedLocation {
@@ -93,10 +104,11 @@ export interface Geocoder {
 }
 
 /**
- * Geocoder with an in-memory cache: place names don't move, and agents tend to
- * ask several questions about the same spot in one conversation.
+ * Geocoder with a small LRU cache: place names don't move, and agents tend to
+ * ask several questions about the same spot in one conversation. The cache is
+ * bounded so a long-running server can't grow without limit.
  */
-export function createGeocoder(http: HttpOptions = {}): Geocoder {
+export function createGeocoder(http: HttpOptions = {}, maxEntries = 500): Geocoder {
   const cache = new Map<string, Promise<ResolvedLocation>>();
 
   async function lookup(query: string): Promise<ResolvedLocation> {
@@ -108,8 +120,9 @@ export function createGeocoder(http: HttpOptions = {}): Geocoder {
       { name, count: 10, language: "en", format: "json" },
       http,
     );
-    const best = pickBestResult(response.results ?? [], qualifiers);
-    if (!best) throw new LocationNotFoundError(query);
+    const results = response.results ?? [];
+    const best = pickBestResult(results, qualifiers);
+    if (!best) throw new LocationNotFoundError(query, results.slice(0, 3).map(describeResult));
     return toResolved(best);
   }
 
@@ -117,12 +130,16 @@ export function createGeocoder(http: HttpOptions = {}): Geocoder {
     resolve(query) {
       const key = normalize(query);
       let pending = cache.get(key);
-      if (!pending) {
+      if (pending) {
+        // Re-insert to mark as most recently used (Map keeps insertion order).
+        cache.delete(key);
+      } else {
         pending = lookup(query);
-        cache.set(key, pending);
         // Don't cache failures: a timeout now shouldn't poison later calls.
         pending.catch(() => cache.delete(key));
       }
+      cache.set(key, pending);
+      if (cache.size > maxEntries) cache.delete(cache.keys().next().value!);
       return pending;
     },
   };

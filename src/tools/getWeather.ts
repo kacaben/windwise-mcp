@@ -1,10 +1,12 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod";
 import { FORECAST_CAVEAT } from "../domain/disclaimers.js";
+import { MAX_FORECAST_DAYS, upcoming } from "../domain/time.js";
 import { degreesToCompass } from "../domain/units.js";
 import { describeWeatherCode } from "../domain/weatherCodes.js";
 import type { WeatherService } from "../openmeteo/client.js";
-import { READ_ONLY, describeLocation, jsonResult, safely, withLocation } from "./shared.js";
+import { getWeatherOutput as outputSchema } from "./outputs.js";
+import { describeLocation, jsonResult, READ_ONLY, safely, withLocation } from "./shared.js";
 
 const inputSchema = withLocation({
   hours: z
@@ -16,6 +18,8 @@ const inputSchema = withLocation({
     .describe("How many hours ahead to return, starting from the current hour (1-168)."),
 });
 
+const compassOrNull = (deg: number | null) => (deg === null ? null : degreesToCompass(deg));
+
 export function registerGetWeather(server: McpServer, service: WeatherService) {
   server.registerTool(
     "get_weather",
@@ -26,18 +30,17 @@ export function registerGetWeather(server: McpServer, service: WeatherService) {
         "Use for general 'what's the weather' questions. Wind is in knots, times are local to the location. " +
         "For wind-sport planning prefer get_wind_forecast or find_wind_windows.",
       inputSchema,
+      outputSchema,
       annotations: READ_ONLY,
     },
     safely(async ({ hours, ...where }) => {
       const location = await service.resolveLocation(where);
-      const days = Math.min(16, Math.ceil(hours / 24) + 1);
-      const forecast = await service.getWeather(location, days);
-
-      const currentHour = `${forecast.currentTime.slice(0, 13)}:00`;
-      const upcoming = forecast.hours.filter((h) => h.time >= currentHour).slice(0, hours);
+      // Land cell: this tool is about the weather in town, not on the water.
+      const days = Math.min(MAX_FORECAST_DAYS, Math.ceil(hours / 24) + 1);
+      const forecast = await service.getWeather(location, { days, cell: "land" });
       const c = forecast.current;
 
-      return jsonResult({
+      return jsonResult(outputSchema, {
         location: describeLocation(location, forecast.timezone),
         current: {
           time: forecast.currentTime,
@@ -48,19 +51,21 @@ export function registerGetWeather(server: McpServer, service: WeatherService) {
           precipitationMm: c.precipitationMm,
           windKn: c.windKn,
           gustKn: c.gustKn,
-          windDirection: c.windDirectionDeg === null ? null : degreesToCompass(c.windDirectionDeg),
+          windDirection: compassOrNull(c.windDirectionDeg),
         },
-        hourly: upcoming.map((h) => ({
-          time: h.time,
-          conditions: describeWeatherCode(h.weatherCode),
-          temperatureC: h.temperatureC,
-          rainChancePct: h.precipitationProbabilityPct,
-          precipitationMm: h.precipitationMm,
-          cloudCoverPct: h.cloudCoverPct,
-          windKn: h.windKn,
-          gustKn: h.gustKn,
-          windDirection: h.windDirectionDeg === null ? null : degreesToCompass(h.windDirectionDeg),
-        })),
+        hourly: upcoming(forecast.hours, forecast.currentHour)
+          .slice(0, hours)
+          .map((h) => ({
+            time: h.time,
+            conditions: describeWeatherCode(h.weatherCode),
+            temperatureC: h.temperatureC,
+            rainChancePct: h.precipitationProbabilityPct,
+            precipitationMm: h.precipitationMm,
+            cloudCoverPct: h.cloudCoverPct,
+            windKn: h.windKn,
+            gustKn: h.gustKn,
+            windDirection: compassOrNull(h.windDirectionDeg),
+          })),
         units: { wind: "knots", temperature: "°C", precipitation: "mm" },
         caveat: FORECAST_CAVEAT,
       });

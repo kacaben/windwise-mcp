@@ -1,6 +1,12 @@
-import type { MarineForecast, WeatherForecast, WeatherService } from "../src/openmeteo/client.js";
-import type { MarineHour } from "../src/openmeteo/marine.js";
+import type {
+  ForecastRequest,
+  MarineForecast,
+  WeatherForecast,
+  WeatherService,
+} from "../src/openmeteo/client.js";
 import type { WeatherHour } from "../src/openmeteo/forecast.js";
+import { LocationNotFoundError } from "../src/openmeteo/geocoding.js";
+import type { MarineHour } from "../src/openmeteo/marine.js";
 
 const pad = (n: number) => String(n).padStart(2, "0");
 
@@ -44,29 +50,46 @@ export function marineDay(date: string, waveHeightM: number, periodS = 10): Mari
   }));
 }
 
-/** A WeatherService backed by in-memory data, for testing tools without the network. */
+/**
+ * A WeatherService backed by in-memory data, for testing tools without the network.
+ * "Now" defaults to 10:15 local on the first forecast day; `weatherRequests`
+ * records what each tool asked for.
+ */
 export function fakeService(options: {
   weather: WeatherHour[];
   marine?: MarineHour[] | Error;
   /** Grid point returned per location name, to simulate different model cells. */
   grid?: Record<string, [number, number]>;
-}): WeatherService {
+  /** Local "now", e.g. "2026-11-07T14:20". */
+  now?: string;
+}): WeatherService & { weatherRequests: ForecastRequest[] } {
+  const now = options.now ?? `${options.weather[0]!.time.slice(0, 10)}T10:15`;
+  const currentHour = `${now.slice(0, 13)}:00`;
+  const weatherRequests: ForecastRequest[] = [];
   return {
+    weatherRequests,
     async resolveLocation(input) {
       if (input.latitude !== undefined && input.longitude !== undefined) {
-        return { name: input.location ?? "point", latitude: input.latitude, longitude: input.longitude, source: "coordinates" };
+        return {
+          name: input.location ?? "point",
+          latitude: input.latitude,
+          longitude: input.longitude,
+          source: "coordinates",
+        };
       }
-      if (input.location === "Nowhere") throw new Error('Could not find a place called "Nowhere".');
+      if (input.location === "Nowhere") throw new LocationNotFoundError("Nowhere");
       const [latitude, longitude] = options.grid?.[input.location!] ?? [20.758, -105.336];
       return { name: input.location!, latitude, longitude, country: "Mexico", source: "geocoded" };
     },
-    async getWeather(location): Promise<WeatherForecast> {
+    async getWeather(location, request): Promise<WeatherForecast> {
+      weatherRequests.push(request);
       const first = options.weather[0]!;
       return {
         latitude: location.latitude,
         longitude: location.longitude,
         timezone: "America/Bahia_Banderas",
-        currentTime: `${first.time.slice(0, 10)}T10:15`,
+        currentTime: now,
+        currentHour,
         current: { ...first },
         hours: options.weather,
       };
@@ -77,6 +100,7 @@ export function fakeService(options: {
         latitude: location.latitude,
         longitude: location.longitude,
         timezone: "America/Bahia_Banderas",
+        currentHour,
         hours: options.marine ?? [],
       };
     },

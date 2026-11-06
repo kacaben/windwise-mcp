@@ -20,7 +20,12 @@ export function min(values: readonly (number | null)[]): number | null {
 
 export function sum(values: readonly (number | null)[], digits = 1): number | null {
   const nums = present(values);
-  return nums.length ? round(nums.reduce((a, b) => a + b, 0), digits) : null;
+  return nums.length
+    ? round(
+        nums.reduce((a, b) => a + b, 0),
+        digits,
+      )
+    : null;
 }
 
 export function groupBy<T, K>(items: readonly T[], key: (item: T) => K): Map<K, T[]> {

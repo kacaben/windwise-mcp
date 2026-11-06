@@ -1,16 +1,17 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { MARINE_CAVEAT } from "../domain/disclaimers.js";
 import { summarizeMarineByDay } from "../domain/marine.js";
-import { inHourRange } from "../domain/time.js";
+import { inHourRange, upcoming } from "../domain/time.js";
 import { degreesToCompass } from "../domain/units.js";
 import type { WeatherService } from "../openmeteo/client.js";
+import { getMarineConditionsOutput as outputSchema } from "./outputs.js";
 import {
-  READ_ONLY,
   assertHourRange,
   describeLocation,
   endHour,
   forecastDays,
   jsonResult,
+  READ_ONLY,
   safely,
   startHour,
   withLocation,
@@ -32,18 +33,20 @@ export function registerGetMarineConditions(server: McpServer, service: WeatherS
         "sea surface temperature and ocean current. Each day includes a sea-state rating and whether it " +
         "is beginner-friendly. Only works for coastal or offshore points; inland places return an error.",
       inputSchema,
+      outputSchema,
       annotations: READ_ONLY,
     },
     safely(async ({ days, start_hour, end_hour, ...where }) => {
       assertHourRange(start_hour, end_hour);
       const location = await service.resolveLocation(where);
       const marine = await service.getMarine(location, days);
+      const ahead = upcoming(marine.hours, marine.currentHour);
 
-      return jsonResult({
+      return jsonResult(outputSchema, {
         location: describeLocation(location, marine.timezone),
         hours: { start: start_hour, end: end_hour, note: "Local time; end is exclusive." },
-        daily: summarizeMarineByDay(marine.hours, start_hour, end_hour),
-        hourly: marine.hours
+        daily: summarizeMarineByDay(ahead, start_hour, end_hour),
+        hourly: ahead
           .filter((h) => inHourRange(h.time, start_hour, end_hour))
           .map((h) => ({
             time: h.time,

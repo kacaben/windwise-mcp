@@ -4,8 +4,10 @@ import type { WindWindow } from "./wind.js";
 export type Verdict = "go" | "marginal" | "no_go";
 
 export interface VerdictInput {
+  /** Windows already filtered to the minimum useful length. */
   windows: readonly WindWindow[];
-  /** Strongest sustained wind in the requested hours. */
+  minWindowHours: number;
+  /** Strongest sustained wind in the remaining session hours. */
   maxWindKn: number | null;
   minWindKn: number;
   maxWindLimitKn?: number | undefined;
@@ -38,21 +40,23 @@ export function sessionVerdict(input: VerdictInput): { verdict: Verdict; reasons
         `Not enough wind: peaks at ${input.maxWindKn} kn, below the ${input.minWindKn} kn minimum.`,
       );
     } else if (input.maxWindLimitKn !== undefined && input.maxWindKn > input.maxWindLimitKn) {
-      downgrade("no_go", `Too windy: up to ${input.maxWindKn} kn, above the ${input.maxWindLimitKn} kn limit.`);
+      downgrade(
+        "no_go",
+        `Too windy: up to ${input.maxWindKn} kn, above the ${input.maxWindLimitKn} kn limit.`,
+      );
     } else {
-      downgrade("no_go", "Wind reaches the range only briefly or is too gusty; no usable window.");
+      downgrade(
+        "no_go",
+        `The wind is in range only in stretches shorter than ${input.minWindowHours} hours, or is too gusty.`,
+      );
     }
   } else {
     const longest = Math.max(...input.windows.map((w) => w.durationHours));
     const best = input.windows.find((w) => w.durationHours === longest)!;
-    if (longest < 2) {
-      downgrade("marginal", `Only a ${longest}-hour window (${best.start.slice(11)}-${best.end.slice(11)}).`);
-    } else {
-      reasons.push(
-        `${longest}-hour window ${best.start.slice(11)}-${best.end.slice(11)}, ` +
-          `averaging ${best.avgWindKn} kn from ${best.direction ?? "variable directions"}.`,
-      );
-    }
+    reasons.push(
+      `${longest}-hour window ${best.start.slice(11)}-${best.end.slice(11)}, ` +
+        `averaging ${best.avgWindKn} kn from ${best.direction ?? "variable directions"}.`,
+    );
     if (input.windows.every((w) => w.gusty)) {
       downgrade("marginal", "Gusty: gusts run more than 10 kn above the average wind.");
     }

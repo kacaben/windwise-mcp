@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { rankLocations, sharedGridCells, type LocationScore } from "../src/domain/compare.js";
+import { type LocationScore, rankLocations, sharedGridCells } from "../src/domain/compare.js";
 import { assessWaves, summarizeMarineByDay } from "../src/domain/marine.js";
 import { sessionVerdict } from "../src/domain/summary.js";
 import type { WindWindow } from "../src/domain/wind.js";
@@ -51,7 +51,7 @@ const window = (overrides: Partial<WindWindow> = {}): WindWindow => ({
 });
 
 describe("sessionVerdict", () => {
-  const base = { minWindKn: 12, thunderstormHours: 0, waves: assessWaves(0.5, 10) };
+  const base = { minWindKn: 12, minWindowHours: 2, thunderstormHours: 0, waves: assessWaves(0.5, 10) };
 
   it("says go for a solid window and small waves", () => {
     const result = sessionVerdict({ ...base, windows: [window()], maxWindKn: 17 });
@@ -70,9 +70,16 @@ describe("sessionVerdict", () => {
     expect(result.reasons[0]).toMatch(/Too windy/);
   });
 
-  it("is marginal for short or gusty sessions and big waves", () => {
-    expect(sessionVerdict({ ...base, windows: [window({ durationHours: 1 })], maxWindKn: 15 }).verdict).toBe("marginal");
-    expect(sessionVerdict({ ...base, windows: [window({ gusty: true })], maxWindKn: 15 }).verdict).toBe("marginal");
+  it("says no_go when the wind is in range only in short stretches", () => {
+    const result = sessionVerdict({ ...base, windows: [], maxWindKn: 14 });
+    expect(result.verdict).toBe("no_go");
+    expect(result.reasons[0]).toMatch(/shorter than 2 hours/);
+  });
+
+  it("is marginal for gusty sessions and big waves", () => {
+    expect(sessionVerdict({ ...base, windows: [window({ gusty: true })], maxWindKn: 15 }).verdict).toBe(
+      "marginal",
+    );
     expect(
       sessionVerdict({ ...base, windows: [window()], maxWindKn: 15, waves: assessWaves(2, 12) }).verdict,
     ).toBe("marginal");

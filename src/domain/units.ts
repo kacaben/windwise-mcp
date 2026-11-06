@@ -1,6 +1,20 @@
 export const COMPASS_POINTS = [
-  "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
-  "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW",
+  "N",
+  "NNE",
+  "NE",
+  "ENE",
+  "E",
+  "ESE",
+  "SE",
+  "SSE",
+  "S",
+  "SSW",
+  "SW",
+  "WSW",
+  "W",
+  "WNW",
+  "NW",
+  "NNW",
 ] as const;
 
 export type CompassPoint = (typeof COMPASS_POINTS)[number];
@@ -25,7 +39,7 @@ export function circularMeanDegrees(degrees: readonly number[]): number | null {
     y += Math.sin(rad);
   }
   if (Math.abs(x) < 1e-9 && Math.abs(y) < 1e-9) return null;
-  return (((Math.atan2(y, x) * 180) / Math.PI) + 360) % 360;
+  return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
 }
 
 /** Upper bound (exclusive, knots) of each Beaufort force 0-11. Force 4 is 11-16 kn, etc. */

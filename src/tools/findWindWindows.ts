@@ -1,23 +1,24 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod";
 import { FORECAST_CAVEAT } from "../domain/disclaimers.js";
-import { inHourRange } from "../domain/time.js";
+import { inHourRange, upcoming } from "../domain/time.js";
 import {
   explainRejections,
   findWindWindows,
-  windRow,
   type WindCriteria,
   type WindWindow,
+  windRow,
 } from "../domain/wind.js";
 import type { WeatherService } from "../openmeteo/client.js";
+import { findWindWindowsOutput as outputSchema } from "./outputs.js";
 import {
-  READ_ONLY,
   assertHourRange,
   compassDirections,
   describeLocation,
   endHour,
   forecastDays,
   jsonResult,
+  READ_ONLY,
   safely,
   startHour,
   windCriteriaFields,
@@ -31,13 +32,6 @@ const inputSchema = withLocation({
   end_hour: endHour(18),
   days: forecastDays(3),
   directions: compassDirections,
-  min_window_hours: z
-    .number()
-    .int()
-    .min(1)
-    .max(24)
-    .default(2)
-    .describe("Ignore windows shorter than this many hours."),
   exclude_thunderstorms: z
     .boolean()
     .default(true)
@@ -63,55 +57,57 @@ export function registerFindWindWindows(server: McpServer, service: WeatherServi
     {
       title: "Find rideable wind windows",
       description:
-        "Find continuous time windows when the wind matches the criteria: an activity preset " +
+        "Find continuous time windows from now on when the wind matches the criteria: an activity preset " +
         "(e.g. dinghy_sailing) or explicit min/max knots and max gusts, plus allowed directions and " +
         "time of day. Returns each window with its average/peak wind and direction, the best window, " +
         "and, when nothing matches, why each hour was rejected. Use for questions like " +
         "'will there be enough wind for wing foiling tomorrow?' or 'when can I go dinghy sailing this week?'.",
       inputSchema,
+      outputSchema,
       annotations: READ_ONLY,
     },
     safely(async (args) => {
-      const { location: _l, latitude: _a, longitude: _o, ...rest } = args;
-      assertHourRange(rest.start_hour, rest.end_hour);
-      const range = windRangeFrom(rest);
+      assertHourRange(args.start_hour, args.end_hour);
+      const range = windRangeFrom(args);
 
       const location = await service.resolveLocation(args);
-      const forecast = await service.getWeather(location, rest.days);
+      const forecast = await service.getWeather(location, { days: args.days, cell: "sea" });
+      const ahead = upcoming(forecast.hours, forecast.currentHour);
 
       const criteria: WindCriteria = {
         minWindKn: range.minWindKn,
         maxWindKn: range.maxWindKn,
         maxGustKn: range.maxGustKn,
-        startHour: rest.start_hour,
-        endHour: rest.end_hour,
-        directions: rest.directions,
-        minWindowHours: rest.min_window_hours,
-        excludeThunderstorms: rest.exclude_thunderstorms,
+        startHour: args.start_hour,
+        endHour: args.end_hour,
+        directions: args.directions,
+        minWindowHours: args.min_window_hours,
+        excludeThunderstorms: args.exclude_thunderstorms,
       };
 
-      const windows = findWindWindows(forecast.hours, criteria);
-      const inRange = forecast.hours.filter((h) =>
-        inHourRange(h.time, criteria.startHour, criteria.endHour),
-      );
-      const strongest = inRange.reduce<(typeof inRange)[number] | null>(
-        (best, h) => (h.windKn !== null && (best?.windKn ?? -1) < h.windKn ? h : best),
-        null,
-      );
+      const windows = findWindWindows(ahead, criteria);
+      const strongest = ahead
+        .filter((h) => inHourRange(h.time, criteria.startHour, criteria.endHour))
+        .reduce<(typeof ahead)[number] | null>(
+          (best, h) => (h.windKn !== null && (best?.windKn ?? -1) < h.windKn ? h : best),
+          null,
+        );
 
-      return jsonResult({
+      return jsonResult(outputSchema, {
         location: describeLocation(location, forecast.timezone),
         criteria: {
           activity: range.activity,
-          minWindKn: range.minWindKn,
-          maxWindKn: range.maxWindKn ?? null,
-          maxGustKn: range.maxGustKn ?? null,
-          startHour: rest.start_hour,
-          endHour: rest.end_hour,
-          days: rest.days,
-          directions: rest.directions ?? null,
-          minWindowHours: rest.min_window_hours,
-          excludeThunderstorms: rest.exclude_thunderstorms,
+          windRangeKn: {
+            min: range.minWindKn,
+            max: range.maxWindKn ?? null,
+            maxGust: range.maxGustKn ?? null,
+            minWindowHours: args.min_window_hours,
+          },
+          startHour: args.start_hour,
+          endHour: args.end_hour,
+          days: args.days,
+          directions: args.directions ?? null,
+          excludeThunderstorms: args.exclude_thunderstorms,
         },
         found: windows.length > 0,
         windowCount: windows.length,
@@ -119,11 +115,11 @@ export function registerFindWindWindows(server: McpServer, service: WeatherServi
         bestWindow: bestWindow(windows),
         windows,
         ...(windows.length === 0 && {
-          whyNoWindows: explainRejections(forecast.hours, criteria),
+          whyNoWindows: explainRejections(ahead, criteria),
           strongestHourInRange: strongest ? windRow(strongest) : null,
         }),
         notes: [
-          "Times are local to the location; window end is exclusive.",
+          `Only hours from now on (local ${forecast.currentHour.slice(11)}) are considered; window end is exclusive.`,
           "Direction is where the wind comes FROM.",
           FORECAST_CAVEAT,
         ],

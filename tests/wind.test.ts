@@ -33,7 +33,11 @@ describe("findWindWindows", () => {
       direction: "W",
       gusty: false,
     });
-    expect(windows[1]).toMatchObject({ start: "2026-11-07T16:00", end: "2026-11-07T17:00", durationHours: 1 });
+    expect(windows[1]).toMatchObject({
+      start: "2026-11-07T16:00",
+      end: "2026-11-07T17:00",
+      durationHours: 1,
+    });
   });
 
   it("only considers the requested hours (end hour exclusive)", () => {
@@ -70,10 +74,7 @@ describe("findWindWindows", () => {
   });
 
   it("joins hours across midnight only when they are truly contiguous", () => {
-    const hours = [
-      ...weatherDay("2026-11-07", { 23: 15 }),
-      ...weatherDay("2026-11-08", { 0: 15 }),
-    ];
+    const hours = [...weatherDay("2026-11-07", { 23: 15 }), ...weatherDay("2026-11-08", { 0: 15 })];
     const windows = findWindWindows(hours, criteria({ startHour: 0, endHour: 24 }));
     // 23:00 -> 00:00 is contiguous in time, so this is one window spanning midnight.
     expect(windows).toEqual([

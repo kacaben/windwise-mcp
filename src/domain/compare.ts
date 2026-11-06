@@ -37,9 +37,7 @@ export function rankLocations<T extends LocationScore>(scores: readonly T[]): Ar
  * Nearby towns often fall in the same weather-model grid cell and get identical
  * forecasts. Ranking them against each other would be noise, so say so.
  */
-export function sharedGridCells(
-  scores: ReadonlyArray<{ location: string; gridPoint: string }>,
-): string[][] {
+export function sharedGridCells(scores: ReadonlyArray<{ location: string; gridPoint: string }>): string[][] {
   const byCell = new Map<string, string[]>();
   for (const { location, gridPoint } of scores) {
     byCell.set(gridPoint, [...(byCell.get(gridPoint) ?? []), location]);

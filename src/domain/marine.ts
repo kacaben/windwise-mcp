@@ -1,6 +1,6 @@
 import { groupBy, max, mean, present } from "./stats.js";
 import { dateOf, inHourRange } from "./time.js";
-import { circularMeanDegrees, degreesToCompass, type CompassPoint } from "./units.js";
+import { type CompassPoint, circularMeanDegrees, degreesToCompass } from "./units.js";
 
 export interface MarineSample {
   time: string;
@@ -91,7 +91,10 @@ export function summarizeMarineByDay(
     const swellMean = circularMeanDegrees(present(dayHours.map((h) => h.swellDirectionDeg)));
     return {
       date,
-      avgWaveHeightM: mean(dayHours.map((h) => h.waveHeightM), 2),
+      avgWaveHeightM: mean(
+        dayHours.map((h) => h.waveHeightM),
+        2,
+      ),
       maxWaveHeightM: maxWave,
       avgWavePeriodS: avgPeriod,
       swellDirection: swellMean === null ? null : degreesToCompass(swellMean),

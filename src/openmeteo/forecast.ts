@@ -1,4 +1,5 @@
-import { columnsToRows, type Columns } from "./columns.js";
+import { floorToHour } from "../domain/time.js";
+import { type Columns, columnsToRows } from "./columns.js";
 import { getJson, type HttpOptions } from "./http.js";
 
 const FORECAST_URL = "https://api.open-meteo.com/v1/forecast";
@@ -44,8 +45,10 @@ export interface WeatherForecast {
   latitude: number;
   longitude: number;
   timezone: string;
-  /** Local time of the current observation, e.g. "2026-11-06T16:00". */
+  /** Local time of the current observation, e.g. "2026-11-06T16:15". */
   currentTime: string;
+  /** Start of the current local hour; hours before it have already passed. */
+  currentHour: string;
   current: Omit<WeatherHour, "time" | "precipitationProbabilityPct">;
   hours: WeatherHour[];
 }
@@ -61,9 +64,21 @@ interface ForecastResponse {
 const num = (value: unknown): number | null =>
   typeof value === "number" && Number.isFinite(value) ? value : null;
 
+/**
+ * Which model grid cell to use for a coastal point. Open-Meteo defaults to
+ * "land"; "sea" picks a neighbouring water cell when there is one (inland
+ * points are unaffected), which better represents wind over the water.
+ */
+export type CellSelection = "land" | "sea";
+
+export interface ForecastRequest {
+  days: number;
+  cell?: CellSelection;
+}
+
 export async function fetchWeatherForecast(
   coords: { latitude: number; longitude: number },
-  days: number,
+  { days, cell = "land" }: ForecastRequest,
   http: HttpOptions = {},
 ): Promise<WeatherForecast> {
   const response = await getJson<ForecastResponse>(
@@ -76,6 +91,7 @@ export async function fetchWeatherForecast(
       wind_speed_unit: "kn",
       timezone: "auto",
       forecast_days: days,
+      cell_selection: cell,
     },
     http,
   );
@@ -101,6 +117,7 @@ export async function fetchWeatherForecast(
     longitude: response.longitude,
     timezone: response.timezone,
     currentTime: c.time,
+    currentHour: floorToHour(c.time),
     current: {
       temperatureC: num(c.temperature_2m),
       feelsLikeC: num(c.apparent_temperature),

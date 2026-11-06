@@ -4,7 +4,7 @@
  * schemas, validation, tool wiring and error mapping without the network.
  */
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WeatherService } from "../src/openmeteo/client.js";
 import { NoMarineDataError } from "../src/openmeteo/marine.js";
 import { createServer } from "../src/server.js";
@@ -52,6 +52,8 @@ describe("WindWise MCP server", () => {
     for (const tool of tools) {
       expect(tool.description!.length).toBeGreaterThan(50);
       expect(tool.annotations?.readOnlyHint).toBe(true);
+      // Every tool publishes its output shape (and the SDK validates results against it).
+      expect(tool.outputSchema?.properties).toHaveProperty("attribution");
     }
     // The activity presets are advertised to the model in all three wind-range tools.
     for (const name of ["find_wind_windows", "compare_locations", "get_weather_summary"]) {
@@ -68,9 +70,11 @@ describe("WindWise MCP server", () => {
     const c = await connect(fakeService({ weather }));
     const { data } = await call(c, "find_wind_windows", { location: "Bucerias", activity: "dinghy_sailing" });
 
-    expect(data.criteria).toMatchObject({ activity: "Dinghy sailing", minWindKn: 10, maxWindKn: 18 });
+    expect(data.criteria).toMatchObject({ activity: "Dinghy sailing", windRangeKn: { min: 10, max: 18 } });
     // 10:00 is too light and 13:00 is too strong, so the day splits into two windows.
-    expect(data.windows.map((w: { start: string; durationHours: number }) => [w.start, w.durationHours])).toEqual([
+    expect(
+      data.windows.map((w: { start: string; durationHours: number }) => [w.start, w.durationHours]),
+    ).toEqual([
       ["2026-11-07T11:00", 2],
       ["2026-11-07T14:00", 3],
     ]);
@@ -84,19 +88,33 @@ describe("WindWise MCP server", () => {
       activity: "dinghy_sailing",
       max_wind_knots: 20,
     });
-    expect(data.criteria).toMatchObject({ minWindKn: 10, maxWindKn: 20 });
+    expect(data.criteria.windRangeKn).toMatchObject({ min: 10, max: 20 });
     expect(data.bestWindow).toMatchObject({ start: "2026-11-07T12:00", durationHours: 3 });
   });
 
   it("get_weather_summary says too windy for dinghy sailing on a 25 kn day", async () => {
-    const weather = weatherDay("2026-11-07", { 9: 22, 10: 24, 11: 25, 12: 25, 13: 24, 14: 23, 15: 22, 16: 21, 17: 20 });
+    const weather = weatherDay("2026-11-07", {
+      9: 22,
+      10: 24,
+      11: 25,
+      12: 25,
+      13: 24,
+      14: 23,
+      15: 22,
+      16: 21,
+      17: 20,
+    });
     const c = await connect(fakeService({ weather, marine: marineDay("2026-11-07", 0.6) }));
     const { data } = await call(c, "get_weather_summary", {
       location: "Bucerias",
       day: "2026-11-07",
       activity: "dinghy_sailing",
     });
-    expect(data).toMatchObject({ activity: "Dinghy sailing", windRangeKn: { min: 10, max: 18 }, verdict: "no_go" });
+    expect(data).toMatchObject({
+      activity: "Dinghy sailing",
+      windRangeKn: { min: 10, max: 18 },
+      verdict: "no_go",
+    });
     expect(data.reasons[0]).toMatch(/Too windy: up to 25 kn, above the 18 kn limit/);
   });
 
@@ -156,6 +174,53 @@ describe("WindWise MCP server", () => {
     expect(data.notes[0]).toMatch(/Bucerias and La Cruz fall in the same forecast-model grid cell/);
   });
 
+  it("never offers hours that have already passed (regression)", async () => {
+    // Strong wind all morning, light after 13:00; it is now 14:20.
+    const weather = weatherDay("2026-11-07", { 9: 15, 10: 15, 11: 15, 12: 15, 16: 14, 17: 14 });
+    const c = await connect(fakeService({ weather, now: "2026-11-07T14:20" }));
+    const { data } = await call(c, "find_wind_windows", { location: "Bucerias", min_wind_knots: 12 });
+    expect(data.windows.map((w: { start: string }) => w.start)).toEqual(["2026-11-07T16:00"]);
+
+    const forecast = await call(c, "get_wind_forecast", { location: "Bucerias", days: 1 });
+    expect(forecast.data.hourly[0].time).toBe("2026-11-07T14:00");
+    expect(forecast.data.daily[0].peakTime).toBe("2026-11-07T16:00");
+  });
+
+  it("explains when today's session is already over", async () => {
+    const c = await connect(fakeService({ weather: breezyDay, now: "2026-11-06T19:05" }));
+    const { isError, text } = await call(c, "get_weather_summary", { location: "Bucerias", day: "today" });
+    expect(isError).toBe(true);
+    expect(text).toContain("session on 2026-11-06 is already over (local time now 19:00)");
+  });
+
+  it("asks for the sea grid cell for wind tools and the land cell for town weather", async () => {
+    const service = fakeService({ weather: breezyDay, marine: marineDay("2026-11-07", 0.6) });
+    const c = await connect(service);
+    await call(c, "get_weather", { location: "Bucerias" });
+    await call(c, "find_wind_windows", { location: "Bucerias" });
+    await call(c, "get_weather_summary", { location: "Bucerias", day: "tomorrow" });
+    expect(service.weatherRequests).toEqual([
+      { days: 2, cell: "land" },
+      { days: 3, cell: "sea" },
+      { days: 2, cell: "sea" },
+    ]);
+  });
+
+  it("hides unexpected internal errors from the model and logs them", async () => {
+    const broken = fakeService({ weather: breezyDay });
+    broken.getWeather = async () => {
+      throw new TypeError("Cannot read properties of undefined (reading 'hours')");
+    };
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const c = await connect(broken);
+    const { isError, text } = await call(c, "get_wind_forecast", { location: "Bucerias" });
+    expect(isError).toBe(true);
+    expect(text).toMatch(/unexpected internal error/);
+    expect(text).not.toMatch(/Cannot read properties/);
+    expect(log).toHaveBeenCalledWith("[windwise-mcp] unexpected error:", expect.any(TypeError));
+    log.mockRestore();
+  });
+
   it("rejects calls without a location", async () => {
     const c = await connect(fakeService({ weather: breezyDay }));
     const { isError, text } = await call(c, "get_wind_forecast", { days: 2 });
@@ -165,7 +230,11 @@ describe("WindWise MCP server", () => {
 
   it("rejects an inverted hour range with a clear message", async () => {
     const c = await connect(fakeService({ weather: breezyDay }));
-    const { isError, text } = await call(c, "get_wind_forecast", { location: "Bucerias", start_hour: 18, end_hour: 9 });
+    const { isError, text } = await call(c, "get_wind_forecast", {
+      location: "Bucerias",
+      start_hour: 18,
+      end_hour: 9,
+    });
     expect(isError).toBe(true);
     expect(text).toBe("end_hour (9) must be after start_hour (18).");
   });

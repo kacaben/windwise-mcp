@@ -1,3 +1,5 @@
+import { ToolInputError } from "./errors.js";
+
 /**
  * Named wind ranges for common activities, so an agent (or a user) can ask for
  * "dinghy sailing" instead of remembering knots. Explicit knot values passed to
@@ -43,7 +45,7 @@ export function resolveWindRange(input: {
     maxGustKn: input.maxGustKn ?? preset?.maxGustKn,
   };
   if (range.maxWindKn !== undefined && range.maxWindKn < range.minWindKn) {
-    throw new RangeError(
+    throw new ToolInputError(
       `Maximum wind (${range.maxWindKn} kn) is below the minimum (${range.minWindKn} kn).`,
     );
   }

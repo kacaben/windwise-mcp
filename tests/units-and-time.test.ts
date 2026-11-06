@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { addDays, addHours, inHourRange, resolveDay } from "../src/domain/time.js";
+import { selectSessionHours } from "../src/domain/session.js";
+import {
+  addDays,
+  addHours,
+  floorToHour,
+  forecastDaysFor,
+  inHourRange,
+  localHourNow,
+  resolveDay,
+  upcoming,
+} from "../src/domain/time.js";
 import {
   beaufort,
   circularMeanDegrees,
@@ -72,10 +82,61 @@ describe("local time helpers", () => {
     expect(inHourRange("2026-11-06T23:00", 0, 24)).toBe(true);
   });
 
+  it("finds the current local hour from a UTC offset and drops past hours", () => {
+    const now = new Date("2026-11-06T22:35:00Z");
+    expect(localHourNow(-6 * 3600, now)).toBe("2026-11-06T16:00");
+    expect(localHourNow(10 * 3600, now)).toBe("2026-11-07T08:00");
+    expect(floorToHour("2026-11-06T16:45")).toBe("2026-11-06T16:00");
+    const hours = ["2026-11-06T15:00", "2026-11-06T16:00", "2026-11-06T17:00"].map((time) => ({ time }));
+    expect(upcoming(hours, "2026-11-06T16:00").map((h) => h.time)).toEqual([
+      "2026-11-06T16:00",
+      "2026-11-06T17:00",
+    ]);
+  });
+
+  it("requests only as many forecast days as a day needs", () => {
+    const now = new Date("2026-11-06T12:00:00Z");
+    expect(forecastDaysFor("today", now)).toBe(1);
+    expect(forecastDaysFor("tomorrow", now)).toBe(2);
+    expect(forecastDaysFor("2026-11-09", now)).toBe(5); // 3 days ahead + today + 1 day of time-zone slack
+    expect(forecastDaysFor("2026-12-31", now)).toBe(16);
+    expect(forecastDaysFor("2026-11-01", now)).toBe(1);
+  });
+
   it("resolves day names relative to the forecast's own today", () => {
     expect(resolveDay("today", "2026-11-06")).toBe("2026-11-06");
     expect(resolveDay("Tomorrow", "2026-11-06")).toBe("2026-11-07");
     expect(resolveDay("2026-11-10", "2026-11-06")).toBe("2026-11-10");
     expect(() => resolveDay("next friday", "2026-11-06")).toThrow(/Unrecognised day/);
+  });
+});
+
+describe("selectSessionHours", () => {
+  const hours = ["2026-11-06", "2026-11-07"].flatMap((date) =>
+    Array.from({ length: 24 }, (_, h) => ({ time: `${date}T${String(h).padStart(2, "0")}:00` })),
+  );
+  const session = { startHour: 9, endHour: 18 };
+
+  it("keeps only the remaining hours of today's session", () => {
+    const today = selectSessionHours(hours, {
+      ...session,
+      date: "2026-11-06",
+      currentHour: "2026-11-06T14:00",
+    });
+    expect(today.map((h) => h.time.slice(11))).toEqual(["14:00", "15:00", "16:00", "17:00"]);
+  });
+
+  it("explains when today's session is already over", () => {
+    expect(() =>
+      selectSessionHours(hours, { ...session, date: "2026-11-06", currentHour: "2026-11-06T19:00" }),
+    ).toThrow(
+      'The 09:00-18:00 session on 2026-11-06 is already over (local time now 19:00). Try day "tomorrow"',
+    );
+  });
+
+  it("explains when the date is outside the forecast", () => {
+    expect(() =>
+      selectSessionHours(hours, { ...session, date: "2026-11-20", currentHour: "2026-11-06T08:00" }),
+    ).toThrow("No forecast for 2026-11-20; the forecast covers 2026-11-06 to 2026-11-07.");
   });
 });

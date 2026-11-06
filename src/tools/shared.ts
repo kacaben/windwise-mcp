@@ -3,13 +3,15 @@ import * as z from "zod";
 import {
   ACTIVITIES,
   ACTIVITY_PRESETS,
-  DEFAULT_MIN_WIND_KN,
-  resolveWindRange,
   type Activity,
   type ActivityPreset,
+  DEFAULT_MIN_WIND_KN,
+  resolveWindRange,
 } from "../domain/activities.js";
 import { ATTRIBUTION } from "../domain/disclaimers.js";
+import { ToolInputError } from "../domain/errors.js";
 import { COMPASS_POINTS } from "../domain/units.js";
+import { DEFAULT_MIN_WINDOW_HOURS } from "../domain/wind.js";
 import type { ResolvedLocation } from "../openmeteo/client.js";
 import { LocationNotFoundError } from "../openmeteo/geocoding.js";
 import { OpenMeteoError } from "../openmeteo/http.js";
@@ -26,8 +28,8 @@ export const locationFields = {
     .max(120)
     .optional()
     .describe(
-      'Place name, optionally with region/country to disambiguate, e.g. "Bucerias, Mexico". ' +
-        "Ignored for lookup when latitude and longitude are given (then used only as a label).",
+      'Place name, optionally with region/country to disambiguate, e.g. "Bucerias, Mexico" or ' +
+        '"Springfield, US". Ignored for lookup when latitude and longitude are given (then only a label).',
     ),
   latitude: z.number().min(-90).max(90).optional().describe("Latitude in decimal degrees."),
   longitude: z.number().min(-180).max(180).optional().describe("Longitude in decimal degrees."),
@@ -74,10 +76,10 @@ export const forecastDays = (fallback: number, maximum = 7) =>
     .min(1)
     .max(maximum)
     .default(fallback)
-    .describe(`Number of days to cover, starting today (1-${maximum}).`);
+    .describe(`Number of days to cover, starting now (1-${maximum}). Hours already past are left out.`);
 
 export const daySelector = z
-  .string()
+  .union([z.enum(["today", "tomorrow"]), z.iso.date()])
   .default("today")
   .describe('Which day: "today", "tomorrow" or a local date "YYYY-MM-DD" (up to 15 days ahead).');
 
@@ -88,6 +90,16 @@ export const compassDirections = z
   .describe(
     'Only accept wind coming FROM these 16-point compass directions, e.g. ["W","WSW","SW"] ' +
       "for a beach facing south-west. Omit to accept any direction.",
+  );
+
+export const minWindowHours = z
+  .number()
+  .int()
+  .min(1)
+  .max(24)
+  .default(DEFAULT_MIN_WINDOW_HOURS)
+  .describe(
+    `Ignore stretches of good wind shorter than this many hours (default ${DEFAULT_MIN_WINDOW_HOURS}).`,
   );
 
 const presetList = ACTIVITIES.map((key) => {
@@ -101,8 +113,7 @@ export const windCriteriaFields = {
     .enum(ACTIVITIES)
     .optional()
     .describe(
-      `Preset wind range for an activity (${presetList}). ` +
-        "Explicit min/max/gust values override the preset.",
+      `Preset wind range for an activity (${presetList}). Explicit min/max/gust values override the preset.`,
     ),
   min_wind_knots: z
     .number()
@@ -124,6 +135,7 @@ export const windCriteriaFields = {
     .max(100)
     .optional()
     .describe("Reject hours whose gusts exceed this, in knots."),
+  min_window_hours: minWindowHours,
 };
 
 export function windRangeFrom(args: {
@@ -141,7 +153,7 @@ export function windRangeFrom(args: {
 }
 
 export function assertHourRange(start: number, end: number) {
-  if (end <= start) throw new RangeError(`end_hour (${end}) must be after start_hour (${start}).`);
+  if (end <= start) throw new ToolInputError(`end_hour (${end}) must be after start_hour (${start}).`);
 }
 
 // ---------------------------------------------------------------------------
@@ -161,9 +173,13 @@ export function describeLocation(location: ResolvedLocation, timezone?: string) 
 
 /**
  * Return data both as text (for clients that only read `content`) and as
- * `structuredContent` (for clients that can consume JSON directly).
+ * `structuredContent`, which the SDK validates against the tool's `outputSchema`.
+ * Passing the schema here makes TypeScript check `data` against it at compile time.
  */
-export function jsonResult(data: Record<string, unknown>): CallToolResult {
+export function jsonResult<Schema extends z.ZodType<{ attribution: string }>>(
+  _schema: Schema,
+  data: Omit<z.input<Schema>, "attribution">,
+): CallToolResult {
   const payload = { ...data, attribution: ATTRIBUTION };
   return {
     content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
@@ -171,9 +187,21 @@ export function jsonResult(data: Record<string, unknown>): CallToolResult {
   };
 }
 
-/** Map domain/integration errors to a message the agent can act on. */
+const UNEXPECTED_ERROR =
+  "WindWise hit an unexpected internal error while running this tool. The details were logged " +
+  "on the server; retrying with different input may help.";
+
+/**
+ * Map known errors to a message the agent can act on. Anything else is a bug:
+ * log it for the developer and give the model a generic message rather than
+ * leaking internals like "Cannot read properties of undefined".
+ */
 export function errorMessage(error: unknown): string {
-  if (error instanceof LocationNotFoundError || error instanceof NoMarineDataError) {
+  if (
+    error instanceof ToolInputError ||
+    error instanceof LocationNotFoundError ||
+    error instanceof NoMarineDataError
+  ) {
     return error.message;
   }
   if (error instanceof OpenMeteoError) {
@@ -181,8 +209,9 @@ export function errorMessage(error: unknown): string {
       ? `Open-Meteo rejected the request: ${error.message}`
       : `Open-Meteo is unavailable right now (${error.message}). Try again shortly.`;
   }
-  if (error instanceof Error) return error.message;
-  return "Unexpected error.";
+  // stdout is the MCP channel; diagnostics go to stderr.
+  console.error("[windwise-mcp] unexpected error:", error);
+  return UNEXPECTED_ERROR;
 }
 
 export function errorResult(error: unknown): CallToolResult {

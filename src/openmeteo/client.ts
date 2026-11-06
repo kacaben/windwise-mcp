@@ -1,4 +1,5 @@
-import { fetchWeatherForecast, type WeatherForecast } from "./forecast.js";
+import { ToolInputError } from "../domain/errors.js";
+import { type ForecastRequest, fetchWeatherForecast, type WeatherForecast } from "./forecast.js";
 import { createGeocoder, type ResolvedLocation } from "./geocoding.js";
 import type { HttpOptions } from "./http.js";
 import { fetchMarineForecast, type MarineForecast } from "./marine.js";
@@ -15,7 +16,7 @@ export interface LocationInput {
  */
 export interface WeatherService {
   resolveLocation(input: LocationInput): Promise<ResolvedLocation>;
-  getWeather(location: ResolvedLocation, days: number): Promise<WeatherForecast>;
+  getWeather(location: ResolvedLocation, request: ForecastRequest): Promise<WeatherForecast>;
   getMarine(location: ResolvedLocation, days: number): Promise<MarineForecast>;
 }
 
@@ -33,13 +34,13 @@ export function createOpenMeteoService(http: HttpOptions = {}): WeatherService {
         };
       }
       if (!input.location) {
-        throw new Error("Provide either a location name or both latitude and longitude.");
+        throw new ToolInputError("Provide either a location name or both latitude and longitude.");
       }
       return geocoder.resolve(input.location);
     },
-    getWeather: (location, days) => fetchWeatherForecast(location, days, http),
+    getWeather: (location, request) => fetchWeatherForecast(location, request, http),
     getMarine: (location, days) => fetchMarineForecast(location, days, http),
   };
 }
 
-export type { ResolvedLocation, WeatherForecast, MarineForecast };
+export type { ForecastRequest, MarineForecast, ResolvedLocation, WeatherForecast };
