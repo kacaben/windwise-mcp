@@ -1,0 +1,25 @@
+# Calls the real Open-Meteo API through a real MCP stdio connection.
+# Kept out of the PR pipeline so an upstream blip never blocks a merge,
+# but run weekly to catch API changes early.
+name: Live smoke test
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 7 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run smoke
