@@ -41,13 +41,23 @@ type LocationShape = {
   longitude?: number | undefined;
 };
 
-const hasLocation = (input: LocationShape) =>
-  Boolean(input.location) || (input.latitude !== undefined && input.longitude !== undefined);
+/** Why a location input can't be used, or null when it is a name, a lat/lon pair, or both. */
+export function locationProblem({ location, latitude, longitude }: LocationShape): string | null {
+  const hasLat = latitude !== undefined;
+  const hasLon = longitude !== undefined;
+  // A lone coordinate would otherwise be silently ignored in favour of the name.
+  if (hasLat !== hasLon) {
+    return `Got ${hasLat ? "latitude" : "longitude"} without ${hasLat ? "longitude" : "latitude"}. Pass both, or neither.`;
+  }
+  if (!location && !hasLat) return "Provide a location name, or both latitude and longitude.";
+  return null;
+}
 
 /** Build a tool input schema that requires a location name or a lat/lon pair. */
 export function withLocation<Shape extends z.ZodRawShape>(shape: Shape) {
-  return z.object({ ...locationFields, ...shape }).refine((input) => hasLocation(input as LocationShape), {
-    message: "Provide a location name, or both latitude and longitude.",
+  return z.object({ ...locationFields, ...shape }).superRefine((input, ctx) => {
+    const problem = locationProblem(input as LocationShape);
+    if (problem) ctx.addIssue({ code: "custom", message: problem });
   });
 }
 
@@ -225,11 +235,15 @@ const UNEXPECTED_ERROR =
   "on the server; retrying with different input may help.";
 
 /**
- * Map known errors to a message the agent can act on. Anything else is a bug:
- * log it for the developer and give the model a generic message rather than
- * leaking internals like "Cannot read properties of undefined".
+ * Report an error: log what the developer needs to stderr, and return the text
+ * the model should see.
+ *
+ * Known errors become a message the agent can act on. Anything else is a bug:
+ * it is logged and the model gets a generic message rather than internals like
+ * "Cannot read properties of undefined". A changed Open-Meteo response is
+ * logged too.
  */
-export function errorMessage(error: unknown): string {
+export function reportError(error: unknown): string {
   if (
     error instanceof ToolInputError ||
     error instanceof LocationNotFoundError ||
@@ -248,6 +262,8 @@ export function errorMessage(error: unknown): string {
           "Open-Meteo answered in a format WindWise does not recognise, so the forecast could not " +
           "be read. Retrying will not help; the details were logged on the server."
         );
+      case "cancelled":
+        return "The request was cancelled before Open-Meteo answered.";
       default:
         return `Open-Meteo is unavailable right now (${error.message}). Try again shortly.`;
     }
@@ -258,19 +274,35 @@ export function errorMessage(error: unknown): string {
 }
 
 export function errorResult(error: unknown): CallToolResult {
-  return { content: [{ type: "text", text: errorMessage(error) }], isError: true };
+  return { content: [{ type: "text", text: reportError(error) }], isError: true };
+}
+
+/** A promise's outcome as a value, so a failure can be handled after other awaits. */
+export type Settled<T> = { ok: true; value: T } | { ok: false; error: unknown };
+
+export function settle<T>(promise: Promise<T>): Promise<Settled<T>> {
+  return promise.then(
+    (value) => ({ ok: true, value }),
+    (error: unknown) => ({ ok: false, error }),
+  );
+}
+
+/** The part of the SDK's per-request context that handlers use. */
+interface ToolContext {
+  mcpReq: { signal: AbortSignal };
 }
 
 /**
  * Wrap a handler so failures come back as `isError` tool results the model can
- * read and recover from, instead of protocol-level errors.
+ * read and recover from, instead of protocol-level errors. The handler also gets
+ * the request's abort signal, so a cancelled call stops its Open-Meteo requests.
  */
 export function safely<Args>(
-  handler: (args: Args) => Promise<CallToolResult>,
-): (args: Args) => Promise<CallToolResult> {
-  return async (args) => {
+  handler: (args: Args, signal: AbortSignal) => Promise<CallToolResult>,
+): (args: Args, ctx: ToolContext) => Promise<CallToolResult> {
+  return async (args, ctx) => {
     try {
-      return await handler(args);
+      return await handler(args, ctx.mcpReq.signal);
     } catch (error) {
       return errorResult(error);
     }

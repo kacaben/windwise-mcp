@@ -69,11 +69,35 @@ export function parseLocationQuery(query: string): { name: string; qualifiers: s
 const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
- * A qualifier matches a country code exactly, or a country/region name as whole
- * words. Substring matching is wrong: "us" is inside "australia".
+ * Common ways people name a country that are neither its ISO code nor the name
+ * Open-Meteo uses ("UK" is "GB", "USA" is "US"). Keys are normalised, without dots.
+ */
+const COUNTRY_ALIASES: Readonly<Record<string, string>> = {
+  uk: "gb",
+  britain: "gb",
+  "great britain": "gb",
+  usa: "us",
+  "united states of america": "us",
+  uae: "ae",
+  holland: "nl",
+  "the netherlands": "nl",
+  "czech republic": "cz",
+  czechia: "cz",
+};
+
+/** The ISO country code a qualifier names, when it is a code or a known alias. */
+const countryCodeFor = (qualifier: string) => {
+  const bare = qualifier.replace(/\./g, "");
+  return COUNTRY_ALIASES[bare] ?? bare;
+};
+
+/**
+ * A qualifier matches a country code (or a common alias such as "UK" or "USA")
+ * exactly, or a country/region name as whole words. Substring matching is wrong:
+ * "us" is inside "australia".
  */
 export function matchesQualifier(result: GeocodingResult, qualifier: string): boolean {
-  if (result.country_code && normalize(result.country_code) === qualifier) return true;
+  if (result.country_code && normalize(result.country_code) === countryCodeFor(qualifier)) return true;
   const wholeWords = new RegExp(`(^|[^a-z0-9])${escapeRegExp(qualifier)}($|[^a-z0-9])`);
   return [result.country, result.admin1, result.admin2, result.admin3]
     .filter((field): field is string => Boolean(field))
@@ -102,6 +126,11 @@ function toResolved(result: GeocodingResult): ResolvedLocation {
   };
 }
 
+/** Results to request for a bare name; the first one is used. */
+const RESULT_COUNT = 10;
+/** Results to request when a region or country has to be matched (Open-Meteo allows up to 100). */
+export const QUALIFIED_RESULT_COUNT = 50;
+
 export interface Geocoder {
   resolve(query: string): Promise<ResolvedLocation>;
 }
@@ -118,11 +147,10 @@ export function createGeocoder(http: HttpOptions = {}, maxEntries = 500): Geocod
     const { name, qualifiers } = parseLocationQuery(query);
     if (name.length < 2) throw new LocationNotFoundError(query);
 
-    const body = await getJson<unknown>(
-      GEOCODING_URL,
-      { name, count: 10, language: "en", format: "json" },
-      http,
-    );
+    // With a qualifier, the right place may be a small town that shares its name with
+    // bigger ones, so look further down Open-Meteo's population-ranked list.
+    const count = qualifiers.length > 0 ? QUALIFIED_RESULT_COUNT : RESULT_COUNT;
+    const body = await getJson<unknown>(GEOCODING_URL, { name, count, language: "en", format: "json" }, http);
     const results = parseResponse(geocodingResponse, body, "geocoding").results ?? [];
     const best = pickBestResult(results, qualifiers);
     if (!best) throw new LocationNotFoundError(query, results.slice(0, 3).map(describeResult));

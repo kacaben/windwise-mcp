@@ -21,9 +21,9 @@ import {
   daySelector,
   describeLocation,
   endHour,
-  errorMessage,
   jsonResult,
   READ_ONLY,
+  reportError,
   safely,
   startHour,
   windCriteriaFields,
@@ -63,7 +63,7 @@ export function registerGetWeatherSummary(server: McpServer, service: WeatherSer
       outputSchema,
       annotations: READ_ONLY,
     },
-    safely(async ({ day, ...args }) => {
+    safely(async ({ day, ...args }, signal) => {
       const { activity, criteria, windRangeKn } = windSearch(args);
 
       const location = await service.resolveLocation(args);
@@ -71,12 +71,12 @@ export function registerGetWeatherSummary(server: McpServer, service: WeatherSer
 
       // Weather is required; marine is best-effort (inland spots, lakes).
       const [weather, marineResult] = await Promise.all([
-        service.getWeather(location, { days, cell: "sea" }),
-        service.getMarine(location, days).then<MarineResult, MarineResult>(
+        service.getWeather(location, { days, cell: "sea" }, signal),
+        service.getMarine(location, days, signal).then<MarineResult, MarineResult>(
           (value) => ({ ok: true, value }),
           (error: unknown) => ({
             ok: false,
-            error: errorMessage(error),
+            error: reportError(error),
             inland: error instanceof NoMarineDataError,
           }),
         ),

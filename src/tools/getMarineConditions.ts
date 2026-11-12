@@ -36,10 +36,10 @@ export function registerGetMarineConditions(server: McpServer, service: WeatherS
       outputSchema,
       annotations: READ_ONLY,
     },
-    safely(async ({ days, start_hour, end_hour, ...where }) => {
+    safely(async ({ days, start_hour, end_hour, ...where }, signal) => {
       assertHourRange(start_hour, end_hour);
       const location = await service.resolveLocation(where);
-      const marine = await service.getMarine(location, forecastDaysAhead(days));
+      const marine = await service.getMarine(location, forecastDaysAhead(days), signal);
       const ahead = withinNextDays(marine.hours, marine.currentHour, days);
 
       return jsonResult(outputSchema, {

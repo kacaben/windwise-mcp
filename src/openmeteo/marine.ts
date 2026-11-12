@@ -65,6 +65,7 @@ export async function fetchMarineForecast(
   coords: { latitude: number; longitude: number },
   days: number,
   http: HttpOptions = {},
+  signal?: AbortSignal,
 ): Promise<MarineForecast> {
   const body = await getJson<unknown>(
     MARINE_URL,
@@ -78,6 +79,7 @@ export async function fetchMarineForecast(
       forecast_days: days,
     },
     http,
+    signal,
   );
   const response = parseResponse(marineResponse, body, "marine");
 

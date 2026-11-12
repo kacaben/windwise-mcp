@@ -79,6 +79,10 @@ src/
   "tomorrow"'). Anything unexpected is logged to stderr and the model gets a generic message,
   never internals like "Cannot read properties of undefined". Bad Open-Meteo requests (400)
   are not retried. Timeouts, network errors, 429 and 5xx are retried once with backoff.
+- **Cancellation reaches the network.** When an MCP client cancels a tool call, the request's
+  abort signal is passed to every forecast and marine `fetch`, and no retry starts after it.
+  Geocoding is the exception: lookups are cached and shared between calls, so one cancelled
+  call must not cancel another's lookup.
 - **Outputs are typed twice.** Each tool declares an `outputSchema`, and the SDK validates
   every result against it at runtime. `jsonResult(schema, data)` also checks `data` against
   the schema at compile time, and the shared schemas are typed against the domain
@@ -113,7 +117,12 @@ src/
   Prevailing direction uses a vector (circular) mean.
 - **Place qualifiers match whole words.** In "Sydney, US", `US` must be a country code or a
   whole word in the country/region name, not any name containing the letters "us" (such as
-  "Australia").
+  "Australia"). Common aliases such as "UK" and "USA" map to their codes. With a qualifier,
+  the geocoder asks for 50 results instead of 10, so a small town that shares its name with
+  bigger ones is still found.
+- **Location input is all or nothing.** A tool takes a place name, a latitude/longitude pair,
+  or both (the name is then just a label). A lone latitude or longitude is an input error,
+  not silently ignored.
 
 ### Agent experience
 
@@ -123,7 +132,9 @@ src/
   with Bucerías and La Cruz de Huanacaxtle.
 - **Graceful partial failure.** `get_weather_summary` still answers for a lake with no marine
   data. `compare_locations` still ranks the spots it could resolve, lists the ones it
-  couldn't, and says which spots have no wave data and why.
+  couldn't, and says which spots have no wave data and why. If every spot fails, the error
+  names each place with its own reason. Each spot's weather and marine requests run in
+  parallel.
 - **Agent-oriented descriptions.** Each tool description says when to use it rather than a
   sibling tool. The server also sends `instructions` (units, local time, which tool to start
   with) to clients that support them.

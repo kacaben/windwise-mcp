@@ -15,9 +15,17 @@ export interface LocationInput {
  * Tools depend on this interface, not on HTTP, so they can be tested with a fake.
  */
 export interface WeatherService {
+  /**
+   * Geocoding takes no abort signal on purpose: lookups are cached and shared
+   * between tool calls, so one cancelled call must not cancel another's lookup.
+   */
   resolveLocation(input: LocationInput): Promise<ResolvedLocation>;
-  getWeather(location: ResolvedLocation, request: ForecastRequest): Promise<WeatherForecast>;
-  getMarine(location: ResolvedLocation, days: number): Promise<MarineForecast>;
+  getWeather(
+    location: ResolvedLocation,
+    request: ForecastRequest,
+    signal?: AbortSignal,
+  ): Promise<WeatherForecast>;
+  getMarine(location: ResolvedLocation, days: number, signal?: AbortSignal): Promise<MarineForecast>;
 }
 
 export function createOpenMeteoService(http: HttpOptions = {}): WeatherService {
@@ -38,8 +46,8 @@ export function createOpenMeteoService(http: HttpOptions = {}): WeatherService {
       }
       return geocoder.resolve(input.location);
     },
-    getWeather: (location, request) => fetchWeatherForecast(location, request, http),
-    getMarine: (location, days) => fetchMarineForecast(location, days, http),
+    getWeather: (location, request, signal) => fetchWeatherForecast(location, request, http, signal),
+    getMarine: (location, days, signal) => fetchMarineForecast(location, days, http, signal),
   };
 }
 

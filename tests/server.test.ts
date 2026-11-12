@@ -6,6 +6,7 @@
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WeatherService } from "../src/openmeteo/client.js";
+import { LocationNotFoundError } from "../src/openmeteo/geocoding.js";
 import { OpenMeteoError } from "../src/openmeteo/http.js";
 import { NoMarineDataError } from "../src/openmeteo/marine.js";
 import { createServer } from "../src/server.js";
@@ -457,5 +458,48 @@ describe("compare_locations", () => {
     const { data } = await call(c, "compare_locations", { ...spots, include_marine: false });
     expect(data.date).toBe("2026-11-07");
     expect(data.notes.join(" ")).not.toMatch(/different time zones/);
+  });
+});
+
+describe("input checks and cancellation", () => {
+  it("rejects a lone coordinate instead of silently geocoding the name", async () => {
+    const c = await connect(fakeService({ weather: breezyDay }));
+    const { isError, text } = await call(c, "get_wind_forecast", { location: "Bucerias", latitude: 20.75 });
+    expect(isError).toBe(true);
+    expect(text).toMatch(/Got latitude without longitude\. Pass both, or neither\./);
+  });
+
+  it("says which error belongs to which place when every location fails", async () => {
+    const service = fakeService({ weather: breezyDay });
+    service.resolveLocation = async (input) => {
+      throw new LocationNotFoundError(input.location!);
+    };
+    const c = await connect(service);
+    const { isError, text } = await call(c, "compare_locations", {
+      locations: ["Nowhere", "Nowhere, Mars"],
+      day: "tomorrow",
+    });
+    expect(isError).toBe(true);
+    expect(text).toMatch(/^None of the locations could be compared\.\n- Nowhere: .*\n- Nowhere, Mars: /);
+  });
+
+  it("passes the MCP request's abort signal to the weather service", async () => {
+    const service = fakeService({ weather: breezyDay, marine: marineDay("2026-11-07", 0.6) });
+    const signals: unknown[] = [];
+    const getWeather = service.getWeather.bind(service);
+    const getMarine = service.getMarine.bind(service);
+    service.getWeather = async (location, request, signal) => {
+      signals.push(signal);
+      return getWeather(location, request);
+    };
+    service.getMarine = async (location, days, signal) => {
+      signals.push(signal);
+      return getMarine(location, days);
+    };
+    const c = await connect(service);
+    await call(c, "get_weather_summary", { location: "Bucerias", day: "tomorrow" });
+    await call(c, "compare_locations", { locations: ["Bucerias", "La Cruz"], day: "tomorrow" });
+    expect(signals).toHaveLength(6);
+    for (const signal of signals) expect(signal).toBeInstanceOf(AbortSignal);
   });
 });

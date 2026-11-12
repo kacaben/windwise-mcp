@@ -58,6 +58,13 @@ const calls: SmokeCall[] = [
     // Regression: "us" must not match "Australia".
     check: (d) => (d.location.country === "United States" ? undefined : `resolved to ${d.location.country}`),
   },
+  {
+    name: "get_weather",
+    args: { location: "Brighton, UK", hours: 1 },
+    expect: "ok",
+    // Regression: common country aliases ("UK" for GB) must resolve.
+    check: (d) => (d.location.country === "United Kingdom" ? undefined : `resolved to ${d.location.country}`),
+  },
   { name: "get_marine_conditions", args: { location: "Paris, France" }, expect: "error" },
   { name: "get_weather", args: { location: "Xyzzyqwerty" }, expect: "error" },
 ];

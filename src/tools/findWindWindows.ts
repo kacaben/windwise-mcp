@@ -46,14 +46,18 @@ export function registerFindWindWindows(server: McpServer, service: WeatherServi
       outputSchema,
       annotations: READ_ONLY,
     },
-    safely(async (args) => {
+    safely(async (args, signal) => {
       const { activity, criteria, windRangeKn } = windSearch(args);
 
       const location = await service.resolveLocation(args);
-      const forecast = await service.getWeather(location, {
-        days: forecastDaysAhead(args.days),
-        cell: "sea",
-      });
+      const forecast = await service.getWeather(
+        location,
+        {
+          days: forecastDaysAhead(args.days),
+          cell: "sea",
+        },
+        signal,
+      );
       const ahead = withinNextDays(forecast.hours, forecast.currentHour, args.days);
 
       const windows = findWindWindows(ahead, criteria);

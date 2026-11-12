@@ -36,10 +36,14 @@ export function registerGetWindForecast(server: McpServer, service: WeatherServi
       outputSchema,
       annotations: READ_ONLY,
     },
-    safely(async ({ days, start_hour, end_hour, ...where }) => {
+    safely(async ({ days, start_hour, end_hour, ...where }, signal) => {
       assertHourRange(start_hour, end_hour);
       const location = await service.resolveLocation(where);
-      const forecast = await service.getWeather(location, { days: forecastDaysAhead(days), cell: "sea" });
+      const forecast = await service.getWeather(
+        location,
+        { days: forecastDaysAhead(days), cell: "sea" },
+        signal,
+      );
       const ahead = withinNextDays(forecast.hours, forecast.currentHour, days);
 
       return jsonResult(outputSchema, {

@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "coverage": "vitest run --coverage",
     "smoke": "tsx scripts/smoke.ts",
     "lint": "biome check --error-on-warnings .",
     "format": "biome check --write ."
@@ -23,10 +24,19 @@
     "marine",
     "kitesurfing",
     "wing-foiling",
+    "dinghy-sailing",
     "ai-agents"
   ],
-  "author": "Katerina",
+  "author": "Kateřina Beňová",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kacaben/windwise-mcp.git"
+  },
+  "homepage": "https://github.com/kacaben/windwise-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/kacaben/windwise-mcp/issues"
+  },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.4.0",
     "zod": "^4.6.7"
@@ -35,6 +45,7 @@
     "@biomejs/biome": "^2.6.6",
     "@modelcontextprotocol/client": "^2.4.0",
     "@types/node": "^22.20.5",
+    "@vitest/coverage-v8": "^5.1.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^5.1.0"

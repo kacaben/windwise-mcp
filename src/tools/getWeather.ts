@@ -33,11 +33,11 @@ export function registerGetWeather(server: McpServer, service: WeatherService) {
       outputSchema,
       annotations: READ_ONLY,
     },
-    safely(async ({ hours, ...where }) => {
+    safely(async ({ hours, ...where }, signal) => {
       const location = await service.resolveLocation(where);
       // Land cell: this tool is about the weather in town, not on the water.
       const days = Math.min(MAX_FORECAST_DAYS, Math.ceil(hours / 24) + 1);
-      const forecast = await service.getWeather(location, { days, cell: "land" });
+      const forecast = await service.getWeather(location, { days, cell: "land" }, signal);
       const c = forecast.current;
 
       return jsonResult(outputSchema, {

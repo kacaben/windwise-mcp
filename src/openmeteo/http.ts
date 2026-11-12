@@ -23,9 +23,16 @@ export interface HttpOptions {
 
 /**
  * `invalid_response` means the API answered but not in the shape we expect,
- * which usually means it changed. Retrying will not help.
+ * which usually means it changed. Retrying will not help. `cancelled` means the
+ * MCP client cancelled the tool call.
  */
-export type OpenMeteoErrorKind = "bad_request" | "upstream" | "timeout" | "network" | "invalid_response";
+export type OpenMeteoErrorKind =
+  | "bad_request"
+  | "upstream"
+  | "timeout"
+  | "network"
+  | "invalid_response"
+  | "cancelled";
 
 export class OpenMeteoError extends Error {
   constructor(
@@ -51,26 +58,41 @@ function isRetryable(error: unknown): boolean {
   return error.kind === "upstream" && (error.status === 429 || (error.status ?? 0) >= 500);
 }
 
-async function fetchOnce<T>(url: string, fetchImpl: FetchLike, timeoutMs: number): Promise<T> {
-  const timedOut = () => new OpenMeteoError(`Open-Meteo did not respond within ${timeoutMs} ms`, "timeout");
+const cancelled = () => new OpenMeteoError("The tool call was cancelled", "cancelled");
+
+async function fetchOnce<T>(
+  url: string,
+  fetchImpl: FetchLike,
+  timeoutMs: number,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  // An abort is ours (a timeout) unless the caller's signal fired.
+  const aborted = () =>
+    signal?.aborted
+      ? cancelled()
+      : new OpenMeteoError(`Open-Meteo did not respond within ${timeoutMs} ms`, "timeout");
+  const timeout = AbortSignal.timeout(timeoutMs);
 
   let response: Response;
   try {
     response = await fetchImpl(url, {
       headers: { accept: "application/json", "user-agent": USER_AGENT },
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: signal ? AbortSignal.any([timeout, signal]) : timeout,
     });
   } catch (error) {
-    if (isAbort(error)) throw timedOut();
-    throw new OpenMeteoError(`Could not reach Open-Meteo: ${(error as Error).message}`, "network");
+    if (isAbort(error)) throw aborted();
+    throw new OpenMeteoError(
+      `Could not reach Open-Meteo: ${String((error as Error)?.message ?? error)}`,
+      "network",
+    );
   }
 
   let body: unknown;
   try {
     body = await response.json();
   } catch (error) {
-    // The timeout signal also covers reading the body; that is a timeout, not bad JSON.
-    if (isAbort(error)) throw timedOut();
+    // The abort signal also covers reading the body; that is a timeout or a cancel, not bad JSON.
+    if (isAbort(error)) throw aborted();
     throw new OpenMeteoError(
       `Open-Meteo returned a non-JSON response (HTTP ${response.status})`,
       "upstream",
@@ -99,6 +121,8 @@ export async function getJson<T>(
   baseUrl: string,
   params: Record<string, string | number | boolean | readonly string[] | undefined>,
   options: HttpOptions = {},
+  /** Aborts the request (and any retry) when the MCP client cancels the tool call. */
+  signal?: AbortSignal,
 ): Promise<T> {
   const url = new URL(baseUrl);
   for (const [key, value] of Object.entries(params)) {
@@ -112,10 +136,11 @@ export async function getJson<T>(
   const retryDelayMs = options.retryDelayMs ?? 500;
 
   for (let attempt = 0; ; attempt++) {
+    if (signal?.aborted) throw cancelled();
     try {
-      return await fetchOnce<T>(url.toString(), fetchImpl, timeoutMs);
+      return await fetchOnce<T>(url.toString(), fetchImpl, timeoutMs, signal);
     } catch (error) {
-      if (attempt >= retries || !isRetryable(error)) throw error;
+      if (attempt >= retries || !isRetryable(error) || signal?.aborted) throw error;
       await sleep(retryDelayMs * 2 ** attempt);
     }
   }

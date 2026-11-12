@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createOpenMeteoService } from "../src/openmeteo/client.js";
 import { columnsToRows } from "../src/openmeteo/columns.js";
 import { fetchWeatherForecast } from "../src/openmeteo/forecast.js";
 import {
@@ -6,6 +7,7 @@ import {
   LocationNotFoundError,
   parseLocationQuery,
   pickBestResult,
+  QUALIFIED_RESULT_COUNT,
 } from "../src/openmeteo/geocoding.js";
 import { type FetchLike, getJson, OpenMeteoError } from "../src/openmeteo/http.js";
 import { fetchMarineForecast, NoMarineDataError } from "../src/openmeteo/marine.js";
@@ -351,5 +353,101 @@ describe("geocoder cache", () => {
     const calls = fetch.mock.calls.length;
     await geocoder.resolve("San Jose");
     expect(fetch.mock.calls.length).toBe(calls); // still served from the cache
+  });
+});
+
+describe("country aliases and result count", () => {
+  const brightons = [
+    { name: "Brighton", latitude: -37.9, longitude: 145.0, country: "Australia", country_code: "AU" },
+    { name: "Brighton", latitude: 50.8, longitude: -0.1, country: "United Kingdom", country_code: "GB" },
+    { name: "Brighton", latitude: 42.5, longitude: -83.8, country: "United States", country_code: "US" },
+  ];
+
+  it.each([
+    ["uk", "GB"],
+    ["u.k.", "GB"],
+    ["great britain", "GB"],
+    ["usa", "US"],
+    ["u.s.a.", "US"],
+    ["united states of america", "US"],
+  ])("resolves the qualifier %s to country code %s", (qualifier, code) => {
+    expect(pickBestResult(brightons, [qualifier])?.country_code).toBe(code);
+  });
+
+  it("asks Open-Meteo for more results when a qualifier has to be matched", async () => {
+    const fetch = vi.fn<FetchLike>(async () => jsonResponse({ results: brightons }));
+    const geocoder = createGeocoder({ fetch });
+    await geocoder.resolve("Brighton");
+    await geocoder.resolve("Brighton, UK");
+    const counts = fetch.mock.calls.map(([url]) => new URL(url).searchParams.get("count"));
+    expect(counts).toEqual(["10", String(QUALIFIED_RESULT_COUNT)]);
+  });
+});
+
+describe("cancellation", () => {
+  it("stops without retrying when the caller's signal aborts mid-request", async () => {
+    const controller = new AbortController();
+    const fetch = vi.fn<FetchLike>(
+      (_url, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal!.reason));
+          controller.abort();
+        }),
+    );
+    await expect(
+      getJson("https://example.test", {}, { fetch, retries: 2, ...fastRetry }, controller.signal),
+    ).rejects.toMatchObject({ kind: "cancelled" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not start a request when already cancelled", async () => {
+    const fetch = vi.fn<FetchLike>(async () => jsonResponse({}));
+    await expect(getJson("https://example.test", {}, { fetch }, AbortSignal.abort())).rejects.toMatchObject({
+      kind: "cancelled",
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("still reports its own timeout as a timeout when a caller signal is passed", async () => {
+    const fetch: FetchLike = (_url, init) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal!.reason));
+      });
+    await expect(
+      getJson("https://example.test", {}, { fetch, timeoutMs: 20, retries: 0 }, new AbortController().signal),
+    ).rejects.toMatchObject({ kind: "timeout" });
+  });
+});
+
+describe("createOpenMeteoService", () => {
+  it("uses coordinates as given, geocodes names, and passes the abort signal to fetch", async () => {
+    const fetch = vi.fn<FetchLike>(async (url) =>
+      url.includes("geocoding")
+        ? jsonResponse({
+            results: [{ name: "Bucerias", latitude: 20.75, longitude: -105.33, country: "Mexico" }],
+          })
+        : jsonResponse(forecastBody(["2026-11-06T00:00"])),
+    );
+    const service = createOpenMeteoService({ fetch });
+
+    expect(await service.resolveLocation({ latitude: 20.7512, longitude: -105.3349 })).toMatchObject({
+      name: "20.7512, -105.3349",
+      source: "coordinates",
+    });
+    expect(await service.resolveLocation({ location: "Bucerias" })).toMatchObject({
+      latitude: 20.75,
+      source: "geocoded",
+    });
+    await expect(service.resolveLocation({})).rejects.toThrow(/location name or both latitude and longitude/);
+
+    const controller = new AbortController();
+    await service.getWeather(
+      { name: "Bucerias", latitude: 20.75, longitude: -105.33, source: "geocoded" },
+      { days: 1 },
+      controller.signal,
+    );
+    const init = fetch.mock.calls.at(-1)![1]!;
+    controller.abort();
+    expect(init.signal!.aborted).toBe(true);
   });
 });

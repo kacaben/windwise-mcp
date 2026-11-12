@@ -82,6 +82,7 @@ export async function fetchWeatherForecast(
   coords: { latitude: number; longitude: number },
   { days, cell = "land" }: ForecastRequest,
   http: HttpOptions = {},
+  signal?: AbortSignal,
 ): Promise<WeatherForecast> {
   const body = await getJson<unknown>(
     FORECAST_URL,
@@ -96,6 +97,7 @@ export async function fetchWeatherForecast(
       cell_selection: cell,
     },
     http,
+    signal,
   );
   const response = parseResponse(forecastResponse, body, "forecast");
 

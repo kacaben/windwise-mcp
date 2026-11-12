@@ -1,5 +1,5 @@
 import type { WaveAssessment } from "./marine.js";
-import type { RejectionReason, WindWindow } from "./wind.js";
+import { bestWindow, type RejectionReason, type WindWindow } from "./wind.js";
 
 export type Verdict = "go" | "marginal" | "no_go";
 
@@ -111,10 +111,10 @@ export function sessionVerdict(input: VerdictInput): { verdict: Verdict; reasons
   if (input.windows.length === 0) {
     downgrade("no_go", noWindowReason(input, input.maxWindKn));
   } else {
-    const longest = Math.max(...input.windows.map((w) => w.durationHours));
-    const best = input.windows.find((w) => w.durationHours === longest)!;
+    // The same pick as the tool's bestWindWindow, so the reason and the data agree.
+    const best = bestWindow(input.windows)!;
     reasons.push(
-      `${longest}-hour window ${best.start.slice(11)}-${best.end.slice(11)}, ` +
+      `${best.durationHours}-hour window ${best.start.slice(11)}-${best.end.slice(11)}, ` +
         `averaging ${best.avgWindKn} kn from ${best.direction ?? "variable directions"}.`,
     );
     if (input.windows.every((w) => w.gusty)) {

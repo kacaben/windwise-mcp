@@ -13,10 +13,11 @@ import { compareLocationsOutput as outputSchema } from "./outputs.js";
 import {
   daySelector,
   endHour,
-  errorMessage,
   jsonResult,
   READ_ONLY,
+  reportError,
   safely,
+  settle,
   startHour,
   windCriteriaFields,
   windSearch,
@@ -53,10 +54,13 @@ async function scoreLocation(
   name: string,
   args: Args,
   criteria: WindCriteria,
+  signal?: AbortSignal,
 ): Promise<ScoredLocation> {
   const location = await service.resolveLocation({ location: name });
   const days = forecastDaysFor(args.day);
-  const forecast = await service.getWeather(location, { days, cell: "sea" });
+  // Start the marine request alongside the weather one; it only needs the place and the day count.
+  const marineRequest = args.include_marine ? settle(service.getMarine(location, days, signal)) : null;
+  const forecast = await service.getWeather(location, { days, cell: "sea" }, signal);
   const date = resolveDay(args.day, dateOf(forecast.hours[0]!.time));
   const session = {
     date,
@@ -69,20 +73,23 @@ async function scoreLocation(
   const windows = findWindWindows(dayHours, criteria);
 
   // Marine data is a bonus here: a spot without it still gets a wind ranking,
-  // but the reason is reported, and unexpected errors are logged by errorMessage.
+  // but the reason is reported, and unexpected errors are logged by reportError.
   let maxWaveHeightM: number | null = null;
   let marineGap: string | null = null;
-  if (args.include_marine) {
+  const marine = await marineRequest;
+  if (marine?.ok) {
     try {
-      const marine = await service.getMarine(location, days);
-      maxWaveHeightM = max(selectSessionHours(marine.hours, session).map((h) => h.waveHeightM));
+      maxWaveHeightM = max(selectSessionHours(marine.value.hours, session).map((h) => h.waveHeightM));
       if (maxWaveHeightM === null) marineGap = "no wave data for the session hours";
     } catch (error) {
-      marineGap =
-        error instanceof NoMarineDataError
-          ? "no marine data (inland or sheltered water)"
-          : errorMessage(error);
+      // The marine forecast may not reach the session (it ends earlier than the weather one).
+      marineGap = reportError(error);
     }
+  } else if (marine) {
+    marineGap =
+      marine.error instanceof NoMarineDataError
+        ? "no marine data (inland or sheltered water)"
+        : reportError(marine.error);
   }
 
   return {
@@ -115,20 +122,20 @@ export function registerCompareLocations(server: McpServer, service: WeatherServ
       outputSchema,
       annotations: READ_ONLY,
     },
-    safely(async (args) => {
+    safely(async (args, signal) => {
       const { activity, criteria, windRangeKn } = windSearch(args);
 
       // One bad place name shouldn't sink the whole comparison.
       const settled = await Promise.allSettled(
-        args.locations.map((name) => scoreLocation(service, name, args, criteria)),
+        args.locations.map((name) => scoreLocation(service, name, args, criteria, signal)),
       );
       const scores = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
       const failures = settled.flatMap((r, i) =>
-        r.status === "rejected" ? [{ location: args.locations[i]!, error: errorMessage(r.reason) }] : [],
+        r.status === "rejected" ? [{ location: args.locations[i]!, error: reportError(r.reason) }] : [],
       );
       if (scores.length === 0) {
         throw new ToolInputError(
-          `None of the locations could be compared: ${failures.map((f) => f.error).join(" ")}`,
+          `None of the locations could be compared.\n${failures.map((f) => `- ${f.location}: ${f.error}`).join("\n")}`,
         );
       }
 

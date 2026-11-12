@@ -14,33 +14,27 @@ logic on top. It finds rideable wind windows, rates sea state, compares spots an
 a go / marginal / no-go call with reasons.
 
 It is not just a thin API wrapper. The API returns raw hourly columns. WindWise turns them
-into the answers a kite or wing-foil rider actually needs, and is honest about forecast
-uncertainty.
+into the answers a wing-foiler, kiter or dinghy sailor actually needs, and is honest about
+forecast uncertainty.
 
-```
-(illustrative conversation)
-You:    Is there a good time to go dinghy sailing tomorrow in Bucerías, Mexico?
-Agent:  → get_weather_summary { location: "Bucerias, Mexico", day: "tomorrow" }
-        Tomorrow (Fri, Nov 13) looks light for dinghy sailing in Bucerías. The forecast calls it a no-go for a normal dinghy range of 10–18 kn.
+An example from a real conversation (trimmed):
 
-Wind
-
-It’s very light in the morning, about 3–4 kn from the east, and drifts around.
-The sea breeze fills in from the SW after about noon. It peaks around 1–2pm at 8 kn, gusting about 11–12 kn.
-It fades to roughly 4–6 kn by 5–6pm.
-
-Best window: about 12:30–3:30pm. That’s your only real chance, and it’s only 6–8 kn.
-
-Other conditions
-
-The sky is clear and it’s 24–29°C. The sea is 30°C.
-Waves are small, about 0.8 m on a long 12 s swell. That’s easy for beginners.
-There’s a 51% chance of a little rain (under 1 mm) and no thunderstorms.
-
-Verdict: a light-air day, good for a relaxed, flat-water sail if you’re happy with 6–8 kn. It’s not a day for planing or hiking out. A lighter boat, or one with a big rig, will be more fun than a heavy one. Saturday looks even lighter (about 5 kn, from the ENE).
-
-This is a model forecast, so check conditions on the beach. Local sea breezes can run several knots stronger or weaker than predicted. The data comes from Open-Meteo.
-```
+> **You:** Is there a good time to go dinghy sailing tomorrow in Bucerías, Mexico?
+>
+> **Agent** calls `get_weather_summary { location: "Bucerias, Mexico", day: "tomorrow", activity: "dinghy_sailing" }`
+>
+> Tomorrow looks light for dinghy sailing in Bucerías. The forecast calls it a **no-go** for
+> the 10–18 kn dinghy range.
+>
+> - **Wind:** very light in the morning, about 3–4 kn from the east. The sea breeze fills in
+>   from the SW after noon, peaks around 13:00–14:00 at 8 kn (gusts 11–12 kn), and fades to
+>   4–6 kn by evening.
+> - **Conditions:** clear, 24–29 °C, sea 30 °C. Small waves on a long 12 s swell, easy for
+>   beginners. No thunderstorms.
+> - **Verdict:** a light-air day. Fine for a relaxed flat-water sail at 6–8 kn, but not for
+>   planing or hiking out.
+>
+> This is a model forecast, so check conditions on the beach. Data from Open-Meteo.
 
 ---
 
@@ -202,6 +196,7 @@ npx @modelcontextprotocol/inspector node dist/index.js
 | `npm run dev`       | Run the server from source with `tsx`                                                                            |
 | `npm run lint`      | Biome lint and format check, failing on warnings (`npm run format` fixes what it can)                            |
 | `npm run typecheck` | Strict TypeScript check of `src`, `tests` and `scripts`                                                          |
+| `npm run coverage`  | Tests with a V8 coverage report (about 97% of statements)                                                        |
 | `npm test`          | Unit and integration tests (Vitest, no network)                                                                  |
 | `npm run build`     | Compile to `dist/`                                                                                               |
 | `npm run smoke`     | **Live** end-to-end test: spawns `dist/index.js` over stdio and calls every tool against the real Open-Meteo API |
@@ -213,12 +208,15 @@ npx @modelcontextprotocol/inspector node dist/index.js
   verdict reasons, ranking, activity presets, units, local time and session-hour selection.
 - **Integration-layer tests:** query building, Open-Meteo error payloads, retry/backoff,
   timeouts, response validation (missing variables, mismatched lengths, changed time format),
-  geocoding disambiguation (including the "Sydney, US" regression), "did you mean"
-  suggestions, LRU eviction and inland detection. These use a fake `fetch`.
+  cancellation, geocoding disambiguation (the "Sydney, US" regression and aliases such as
+  "UK" and "USA"), "did you mean" suggestions, LRU eviction and inland detection. These use
+  a fake `fetch`.
 - **MCP server tests:** a real `Client` connected through `InMemoryTransport` checks every
   tool's output, input and output schemas, validation errors, past-hour filtering, grid-cell
   choice, partial failures in `compare_locations`, time-zone date mismatches and hidden
   internal errors, with a fake `WeatherService`.
+
+There is one test file per module. `npm run coverage` prints a per-file report.
 
 CI runs lint, typecheck, tests and build on Node 22 and 24 for every push and pull request. A
 separate weekly workflow runs the live smoke test to catch upstream API changes.
@@ -239,6 +237,8 @@ See [Adding a tool](docs/ARCHITECTURE.md#adding-a-tool) in the architecture note
   advice, and they don't account for wave direction or the shape of the beach.
 - The go / marginal / no-go verdict looks at wind, gusts, thunderstorms and waves. It ignores
   rain, temperature and the rider's skill level.
+- Any thunderstorm hour in the session makes the whole day `no_go`, even when a clean window
+  comes before it. That is deliberately conservative; the windows are still listed.
 - The wind tools use the sea grid cell, so the temperature and rain in `get_weather_summary`
   describe the water cell, not the town. `get_weather` uses the land cell.
 - `compare_locations` takes place names only, not coordinates, and waves are just a
