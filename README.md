@@ -17,24 +17,11 @@ It is not just a thin API wrapper. The API returns raw hourly columns. WindWise 
 into the answers a wing-foiler, kiter or dinghy sailor actually needs, and is honest about
 forecast uncertainty.
 
-An example from a real conversation (trimmed):
+A real conversation in Claude, using the `dinghy_sailing` preset:
 
-> **You:** Is there a good time to go dinghy sailing tomorrow in Bucerías, Mexico?
->
-> **Agent** calls `get_weather_summary { location: "Bucerias, Mexico", day: "tomorrow", activity: "dinghy_sailing" }`
->
-> Tomorrow looks light for dinghy sailing in Bucerías. The forecast calls it a **no-go** for
-> the 10–18 kn dinghy range.
->
-> - **Wind:** very light in the morning, about 3–4 kn from the east. The sea breeze fills in
->   from the SW after noon, peaks around 13:00–14:00 at 8 kn (gusts 11–12 kn), and fades to
->   4–6 kn by evening.
-> - **Conditions:** clear, 24–29 °C, sea 30 °C. Small waves on a long 12 s swell, easy for
->   beginners. No thunderstorms.
-> - **Verdict:** a light-air day. Fine for a relaxed flat-water sail at 6–8 kn, but not for
->   planing or hiking out.
->
-> This is a model forecast, so check conditions on the beach. Data from Open-Meteo.
+<p align="center">
+  <img src="docs/Screenshot_windWiseMCP.png" alt="Claude answering &quot;When is a good time to go dinghy sailing tomorrow in Bucerías, Mexico?&quot; with WindWise: light wind peaking near 8 kn around 13:00, small waves, no thunderstorms, and a forecast caveat crediting Open-Meteo" width="760">
+</p>
 
 ---
 
@@ -130,6 +117,11 @@ The highlights:
 - **Errors are for the model, bugs are for the developer.** Known failures return actionable
   `isError` results. Anything unexpected is logged and hidden from the model. Open-Meteo
   responses are validated with Zod, so an API change becomes one clear error rather than silent nulls.
+
+  <img src="docs/Screenshot_windWiseMCP_error.png" alt="A WindWise tool call failing with &quot;Open-Meteo is unavailable right now (Could not reach Open-Meteo: fetch failed). Try again shortly.&quot;, followed by Claude calling the tools again" width="680">
+
+  _When Open-Meteo could not be reached, the tool returned an `isError` result the model can
+  read, not a crash or a stack trace. Claude read it and called the tools again on its own._
 - **Forecasts start now, in the spot's local time.** Hours that have already passed are never
   offered, `days` means 24-hour periods from now, and times never pass through the server's time zone.
 - **Honest about uncertainty.** Every answer carries a caveat, and `compare_locations` says when
