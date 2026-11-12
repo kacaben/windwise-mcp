@@ -1,9 +1,12 @@
 # WindWise MCP
 
-[![CI](https://github.com/YOUR_GITHUB_USERNAME/windwise-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_GITHUB_USERNAME/windwise-mcp/actions/workflows/ci.yml)
+[![CI](https://github.com/kacaben/windwise-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/kacaben/windwise-mcp/actions/workflows/ci.yml)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6)
 ![MCP SDK](https://img.shields.io/badge/MCP%20SDK-v2-black)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
+
+> A portfolio project, not production weather advice. Forecasts are model output; see
+> [Limitations](#limitations-and-roadmap).
 
 **An MCP server that lets AI agents answer "should I go out on the water?"** It combines
 [Open-Meteo](https://open-meteo.com/)'s weather and marine forecasts and adds wind-sport
@@ -15,6 +18,7 @@ into the answers a kite or wing-foil rider actually needs, and is honest about f
 uncertainty.
 
 ```
+(illustrative conversation)
 You:    Will there be enough wind for wing foiling in Bucerías tomorrow?
 Agent:  → get_weather_summary { location: "Bucerias, Mexico", day: "tomorrow" }
         Probably not. The forecast peaks at 5.2 kn around 17:00, well below a 12 kn
@@ -54,9 +58,12 @@ overrides the preset.
 
 With no activity and no `min_wind_knots`, the minimum defaults to 12 kn. All three tools
 share `min_window_hours` (default 2), so they agree on what counts as a usable session.
-To add a preset,
-add one line to `ACTIVITY_PRESETS` in `src/domain/activities.ts`. The tool schemas and
-descriptions pick it up automatically.
+To add a preset, add one line to `ACTIVITY_PRESETS` in `src/domain/activities.ts`. The tool
+schemas and descriptions pick it up automatically.
+
+A preset's maximum is not silently dropped: `activity: "dinghy_sailing"` with
+`min_wind_knots: 20` fails with a message saying the 18 kn cap comes from the preset, and
+asks you to pass `max_wind_knots` as well.
 
 ### Example: `find_wind_windows`
 
@@ -132,13 +139,17 @@ src/
 │   ├── activities.ts      #   activity presets (wing foiling, dinghy sailing)
 │   ├── session.ts         #   the remaining hours of a day's session
 │   ├── units.ts           #   compass, circular mean, Beaufort, conversions
-│   ├── time.ts            #   time-zone-safe local time helpers
+│   ├── time.ts            #   time-zone-safe local time helpers, days-from-now trimming
+│   ├── stats.ts           #   null-safe mean / max / min / sum / groupBy
+│   ├── weatherCodes.ts    #   WMO weather codes → words, thunderstorm check
+│   ├── disclaimers.ts     #   attribution and forecast caveats
 │   └── errors.ts          #   ToolInputError (messages safe to show the model)
 └── openmeteo/             # integration layer
     ├── http.ts            #   timeouts, retry with backoff, typed errors
     ├── geocoding.ts       #   place search, disambiguation, bounded LRU cache
     ├── forecast.ts        #   weather API → WeatherHour[]
     ├── marine.ts          #   marine API → MarineHour[]
+    ├── columns.ts         #   column-wise API arrays → row records
     └── client.ts          #   WeatherService interface (what tools depend on)
 ```
 
@@ -164,7 +175,9 @@ src/
   `get_weather` keeps the land cell, because it describes the weather in town.
 - **Forecasts start now.** Open-Meteo returns the day from midnight. Every tool drops the hours
   that have already passed, and `get_weather_summary` for "today" judges only the rest of the
-  session, or says the session is over.
+  session, or says the session is over. A `days` argument means 24-hour periods from the
+  current hour (the server asks Open-Meteo for one extra calendar day and trims), so
+  `days: 1` at 22:30 still returns a full day ahead.
 - **Place qualifiers match whole words.** In "Sydney, US", `US` must be a country code or a
   whole word in the country/region name, not any name containing the letters "us" (such as
   "Australia").
@@ -191,7 +204,7 @@ src/
 Requires **Node.js 22 or newer**. No API key is needed.
 
 ```bash
-git clone https://github.com/YOUR_GITHUB_USERNAME/windwise-mcp.git
+git clone https://github.com/kacaben/windwise-mcp.git
 cd windwise-mcp
 npm install
 npm run build
@@ -285,9 +298,25 @@ list in `src/openmeteo/` and map it onto the typed hour interface.
   Bay, are often under-forecast by global models.
 - Marine data has ~5 km resolution and is less reliable inside bays and near the shore.
 - Wave ratings are deliberately simple and conservative. They are a hint, not safety advice.
+- The go / marginal / no-go verdict looks at wind, gusts, thunderstorms and waves. It ignores
+  rain, temperature and the rider's skill level.
+- The wind tools use the sea grid cell, so the temperature and rain in `get_weather_summary`
+  describe the water cell, not the town. `get_weather` uses the land cell.
+- `compare_locations` takes place names only, not coordinates, and waves are just a
+  tie-breaker in its ranking.
+- Open-Meteo responses are trusted as-is. A changed or missing field shows up as "no data"
+  instead of a clear API-changed error.
+- Forecasts are not cached (only place lookups are), and a rate-limited request is retried
+  once after a short delay, ignoring `Retry-After`.
+- Prevailing direction is an unweighted vector mean, so a few calm hours from another
+  direction can pull it around.
 
 Ideas for later:
 
+- [ ] Validate Open-Meteo responses with Zod at the boundary
+- [ ] Short-TTL forecast cache and `Retry-After` handling
+- [ ] Coordinates and a direction filter for `compare_locations`; weigh waves in the ranking
+- [ ] Skill-level input for the sea-state rating and verdict
 - [ ] Compare several weather models (ECMWF, GFS, ICON) side by side to show forecast spread
 - [ ] Verify past forecasts against Open-Meteo's historical data to measure local bias
 - [ ] Tide data, and "offshore wind" warnings computed from each spot's beach orientation
