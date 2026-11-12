@@ -32,6 +32,11 @@ export class OpenMeteoError extends Error {
   }
 }
 
+function isAbort(error: unknown): boolean {
+  const name = (error as { name?: string } | null)?.name;
+  return name === "TimeoutError" || name === "AbortError";
+}
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function isRetryable(error: unknown): boolean {
@@ -41,6 +46,8 @@ function isRetryable(error: unknown): boolean {
 }
 
 async function fetchOnce<T>(url: string, fetchImpl: FetchLike, timeoutMs: number): Promise<T> {
+  const timedOut = () => new OpenMeteoError(`Open-Meteo did not respond within ${timeoutMs} ms`, "timeout");
+
   let response: Response;
   try {
     response = await fetchImpl(url, {
@@ -48,17 +55,16 @@ async function fetchOnce<T>(url: string, fetchImpl: FetchLike, timeoutMs: number
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
-    const name = (error as { name?: string })?.name;
-    if (name === "TimeoutError" || name === "AbortError") {
-      throw new OpenMeteoError(`Open-Meteo did not respond within ${timeoutMs} ms`, "timeout");
-    }
+    if (isAbort(error)) throw timedOut();
     throw new OpenMeteoError(`Could not reach Open-Meteo: ${(error as Error).message}`, "network");
   }
 
   let body: unknown;
   try {
     body = await response.json();
-  } catch {
+  } catch (error) {
+    // The timeout signal also covers reading the body; that is a timeout, not bad JSON.
+    if (isAbort(error)) throw timedOut();
     throw new OpenMeteoError(
       `Open-Meteo returned a non-JSON response (HTTP ${response.status})`,
       "upstream",

@@ -6,6 +6,7 @@
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WeatherService } from "../src/openmeteo/client.js";
+import { OpenMeteoError } from "../src/openmeteo/http.js";
 import { NoMarineDataError } from "../src/openmeteo/marine.js";
 import { createServer } from "../src/server.js";
 import { fakeService, marineDay, weatherDay } from "./helpers.js";
@@ -201,9 +202,88 @@ describe("WindWise MCP server", () => {
     await call(c, "get_weather_summary", { location: "Bucerias", day: "tomorrow" });
     expect(service.weatherRequests).toEqual([
       { days: 2, cell: "land" },
-      { days: 3, cell: "sea" },
+      { days: 4, cell: "sea" }, // 3 days from now needs 3 + 1 calendar days (#1)
       { days: 2, cell: "sea" },
     ]);
+  });
+
+  it("covers the full number of days from now, not calendar days (#1)", async () => {
+    // 22:30 local: a calendar-day request for 1 day would leave only 2 hours.
+    const weather = [
+      ...weatherDay("2026-11-06", { 22: 14, 23: 14 }),
+      ...weatherDay("2026-11-07", { 0: 14, 1: 14, 9: 15, 10: 15, 11: 15 }),
+      ...weatherDay("2026-11-08", { 9: 15 }),
+    ];
+    const service = fakeService({ weather, marine: marineDay("2026-11-06", 0.5), now: "2026-11-06T22:30" });
+    const c = await connect(service);
+
+    const wind = await call(c, "get_wind_forecast", { location: "Bucerias", days: 1 });
+    const times: string[] = wind.data.hourly.map((h: { time: string }) => h.time);
+    expect(service.weatherRequests.at(-1)).toEqual({ days: 2, cell: "sea" });
+    expect(times).toHaveLength(24);
+    expect(times[0]).toBe("2026-11-06T22:00");
+    expect(times.at(-1)).toBe("2026-11-07T21:00");
+
+    // find_wind_windows sees the next morning's 09:00-12:00 session too.
+    const windows = await call(c, "find_wind_windows", { location: "Bucerias", days: 1, min_wind_knots: 12 });
+    expect(windows.data.windows.map((w: { start: string }) => w.start)).toEqual(["2026-11-07T09:00"]);
+    // ...but not the day after, which is more than 24 hours away.
+    expect(JSON.stringify(windows.data)).not.toContain("2026-11-08T09:00");
+  });
+
+  it("uses the same from-now window for marine conditions (#1)", async () => {
+    const marine = [...marineDay("2026-11-06", 0.5), ...marineDay("2026-11-07", 0.5)];
+    const requested: number[] = [];
+    const service = fakeService({ weather: breezyDay, marine, now: "2026-11-06T20:10" });
+    const original = service.getMarine.bind(service);
+    service.getMarine = async (location, days) => {
+      requested.push(days);
+      return original(location, days);
+    };
+    const c = await connect(service);
+    const { data } = await call(c, "get_marine_conditions", { location: "Bucerias", days: 1 });
+    expect(requested).toEqual([2]);
+    expect(data.hourly).toHaveLength(24);
+    expect(data.hourly[0].time).toBe("2026-11-06T20:00");
+    expect(data.hourly.at(-1).time).toBe("2026-11-07T19:00");
+  });
+
+  it("get_weather_summary blames the wind direction, not 'short stretches' (#3)", async () => {
+    // 15 kn all day, but from the east, and the user only accepts westerlies.
+    const weather = weatherDay(
+      "2026-11-07",
+      Object.fromEntries(Array.from({ length: 24 }, (_, h) => [h, 15])),
+      { windDirectionDeg: 90 },
+    );
+    const c = await connect(fakeService({ weather, marine: marineDay("2026-11-07", 0.5) }));
+    const { data } = await call(c, "get_weather_summary", {
+      location: "Bucerias",
+      day: "2026-11-07",
+      directions: ["W", "WSW", "SW"],
+    });
+    expect(data.verdict).toBe("no_go");
+    expect(data.reasons[0]).toMatch(/direction you excluded/);
+  });
+
+  it("get_weather_summary flags unknown sea state when the marine call fails (#2)", async () => {
+    const c = await connect(
+      fakeService({ weather: breezyDay, marine: new OpenMeteoError("boom", "timeout") }),
+    );
+    const { data } = await call(c, "get_weather_summary", { location: "Bucerias", day: "2026-11-07" });
+    expect(data.verdict).toBe("marginal");
+    expect(data.reasons.join(" ")).toMatch(/sea state is unknown/);
+    expect(data.marine.unavailable).toMatch(/Open-Meteo is unavailable/);
+  });
+
+  it("get_weather_summary explains the preset conflict instead of a bare range error (#4)", async () => {
+    const c = await connect(fakeService({ weather: breezyDay }));
+    const { isError, text } = await call(c, "get_weather_summary", {
+      location: "Bucerias",
+      activity: "dinghy_sailing",
+      min_wind_knots: 20,
+    });
+    expect(isError).toBe(true);
+    expect(text).toMatch(/preset caps wind at 18 kn/);
   });
 
   it("hides unexpected internal errors from the model and logs them", async () => {

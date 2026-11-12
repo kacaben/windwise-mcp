@@ -6,8 +6,15 @@ import { max, min, sum } from "../domain/stats.js";
 import { sessionVerdict } from "../domain/summary.js";
 import { dateOf, forecastDaysFor, resolveDay, upcoming } from "../domain/time.js";
 import { describeWeatherCode, isThunderstorm } from "../domain/weatherCodes.js";
-import { findWindWindows, summarizeWindByDay } from "../domain/wind.js";
+import {
+  checkHour,
+  explainRejections,
+  findWindWindows,
+  summarizeWindByDay,
+  type WindCriteria,
+} from "../domain/wind.js";
 import type { MarineForecast, WeatherService } from "../openmeteo/client.js";
+import { NoMarineDataError } from "../openmeteo/marine.js";
 import { bestWindow } from "./findWindWindows.js";
 import { getWeatherSummaryOutput as outputSchema } from "./outputs.js";
 import {
@@ -41,7 +48,7 @@ function mode<T>(values: readonly T[]): T | undefined {
   return [...counts].sort((a, b) => b[1] - a[1])[0]?.[0];
 }
 
-type MarineResult = { ok: true; value: MarineForecast } | { ok: false; error: string };
+type MarineResult = { ok: true; value: MarineForecast } | { ok: false; error: string; inland: boolean };
 
 export function registerGetWeatherSummary(server: McpServer, service: WeatherService) {
   server.registerTool(
@@ -70,7 +77,11 @@ export function registerGetWeatherSummary(server: McpServer, service: WeatherSer
         service.getWeather(location, { days, cell: "sea" }),
         service.getMarine(location, days).then<MarineResult, MarineResult>(
           (value) => ({ ok: true, value }),
-          (error: unknown) => ({ ok: false, error: errorMessage(error) }),
+          (error: unknown) => ({
+            ok: false,
+            error: errorMessage(error),
+            inland: error instanceof NoMarineDataError,
+          }),
         ),
       ]);
 
@@ -82,7 +93,7 @@ export function registerGetWeatherSummary(server: McpServer, service: WeatherSer
         currentHour: weather.currentHour,
       });
 
-      const windows = findWindWindows(session, {
+      const criteria: WindCriteria = {
         minWindKn: range.minWindKn,
         maxWindKn: range.maxWindKn,
         maxGustKn: range.maxGustKn,
@@ -91,7 +102,8 @@ export function registerGetWeatherSummary(server: McpServer, service: WeatherSer
         directions: args.directions,
         minWindowHours: args.min_window_hours,
         excludeThunderstorms: true,
-      });
+      };
+      const windows = findWindWindows(session, criteria);
       const wind = summarizeWindByDay(session, args.start_hour, args.end_hour)[0] ?? null;
       const marineDay = marineResult.ok
         ? (summarizeMarineByDay(
@@ -110,6 +122,10 @@ export function registerGetWeatherSummary(server: McpServer, service: WeatherSer
         maxWindLimitKn: range.maxWindKn,
         thunderstormHours,
         waves: marineDay?.assessment ?? null,
+        // A missing assessment is only harmless for inland points; otherwise sea state is unknown.
+        waveGap: marineResult.ok || !marineResult.inland ? "failed" : "inland",
+        usableHours: session.filter((h) => checkHour(h, criteria) === null).length,
+        rejections: explainRejections(session, criteria),
       });
 
       return jsonResult(outputSchema, {

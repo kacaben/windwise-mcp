@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { MARINE_CAVEAT } from "../domain/disclaimers.js";
 import { summarizeMarineByDay } from "../domain/marine.js";
-import { inHourRange, upcoming } from "../domain/time.js";
+import { forecastDaysAhead, inHourRange, withinNextDays } from "../domain/time.js";
 import { degreesToCompass } from "../domain/units.js";
 import type { WeatherService } from "../openmeteo/client.js";
 import { getMarineConditionsOutput as outputSchema } from "./outputs.js";
@@ -39,8 +39,8 @@ export function registerGetMarineConditions(server: McpServer, service: WeatherS
     safely(async ({ days, start_hour, end_hour, ...where }) => {
       assertHourRange(start_hour, end_hour);
       const location = await service.resolveLocation(where);
-      const marine = await service.getMarine(location, days);
-      const ahead = upcoming(marine.hours, marine.currentHour);
+      const marine = await service.getMarine(location, forecastDaysAhead(days));
+      const ahead = withinNextDays(marine.hours, marine.currentHour, days);
 
       return jsonResult(outputSchema, {
         location: describeLocation(location, marine.timezone),

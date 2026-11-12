@@ -30,8 +30,20 @@ describe("resolveWindRange", () => {
 
   it("rejects a maximum below the minimum, including one created by an override", () => {
     expect(() => resolveWindRange({ minWindKn: 20, maxWindKn: 15 })).toThrow(/below the minimum/);
+  });
+
+  it("says when the conflicting maximum came from the preset, not the caller (#4)", () => {
     expect(() => resolveWindRange({ activity: "dinghy_sailing", minWindKn: 20 })).toThrow(
-      "Maximum wind (18 kn) is below the minimum (20 kn).",
+      /Dinghy sailing preset caps wind at 18 kn, below your minimum of 20 kn.*max_wind_knots/,
     );
+    // An explicit maximum the caller typed keeps the plain message.
+    expect(() => resolveWindRange({ activity: "dinghy_sailing", minWindKn: 20, maxWindKn: 15 })).toThrow(
+      "Maximum wind (15 kn) is below the minimum (20 kn).",
+    );
+    // Passing both explicitly resolves the conflict.
+    expect(resolveWindRange({ activity: "dinghy_sailing", minWindKn: 20, maxWindKn: 30 })).toMatchObject({
+      minWindKn: 20,
+      maxWindKn: 30,
+    });
   });
 });

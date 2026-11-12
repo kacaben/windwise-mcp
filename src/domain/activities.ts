@@ -45,8 +45,13 @@ export function resolveWindRange(input: {
     maxGustKn: input.maxGustKn ?? preset?.maxGustKn,
   };
   if (range.maxWindKn !== undefined && range.maxWindKn < range.minWindKn) {
+    // Say where the limit came from: an inherited preset maximum is not something the caller typed.
+    const inherited = input.maxWindKn === undefined && preset?.maxWindKn !== undefined;
     throw new ToolInputError(
-      `Maximum wind (${range.maxWindKn} kn) is below the minimum (${range.minWindKn} kn).`,
+      inherited
+        ? `The ${preset!.label} preset caps wind at ${range.maxWindKn} kn, below your minimum of ` +
+            `${range.minWindKn} kn. Also pass max_wind_knots (or omit activity) to set your own range.`
+        : `Maximum wind (${range.maxWindKn} kn) is below the minimum (${range.minWindKn} kn).`,
     );
   }
   return range;

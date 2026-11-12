@@ -76,6 +76,59 @@ describe("sessionVerdict", () => {
     expect(result.reasons[0]).toMatch(/shorter than 2 hours/);
   });
 
+  it("blames the wind direction when strength is right but the direction is excluded (#3)", () => {
+    const result = sessionVerdict({
+      ...base,
+      windows: [],
+      maxWindKn: 16,
+      rejections: { wrong_direction: 5 },
+    });
+    expect(result.verdict).toBe("no_go");
+    expect(result.reasons[0]).toMatch(/right for 5 hour\(s\), but it blows from a direction you excluded/);
+  });
+
+  it("blames short stretches over 'too windy' when some hours are usable (#3)", () => {
+    const result = sessionVerdict({
+      ...base,
+      windows: [],
+      maxWindKn: 25,
+      maxWindLimitKn: 18,
+      usableHours: 1,
+      rejections: { too_strong: 3 },
+    });
+    expect(result.reasons[0]).toMatch(/1 hour\(s\) meet your wind criteria, but never 2 in a row/);
+    expect(result.reasons[0]).not.toMatch(/Too windy/);
+  });
+
+  it("blames gusts when only the gust limit rejects the hours (#3)", () => {
+    const result = sessionVerdict({ ...base, windows: [], maxWindKn: 15, rejections: { too_gusty: 4 } });
+    expect(result.reasons[0]).toMatch(/gusts exceed your gust limit/);
+  });
+
+  it("flags unknown sea state as marginal when wave data failed to load (#2)", () => {
+    const result = sessionVerdict({
+      ...base,
+      waves: null,
+      waveGap: "failed",
+      windows: [window()],
+      maxWindKn: 17,
+    });
+    expect(result.verdict).toBe("marginal");
+    expect(result.reasons.join(" ")).toMatch(/sea state is unknown/);
+  });
+
+  it("only notes missing wave data for inland points, without downgrading (#2)", () => {
+    const result = sessionVerdict({
+      ...base,
+      waves: null,
+      waveGap: "inland",
+      windows: [window()],
+      maxWindKn: 17,
+    });
+    expect(result.verdict).toBe("go");
+    expect(result.reasons.join(" ")).toMatch(/inland or sheltered water/);
+  });
+
   it("is marginal for gusty sessions and big waves", () => {
     expect(sessionVerdict({ ...base, windows: [window({ gusty: true })], maxWindKn: 15 }).verdict).toBe(
       "marginal",

@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { FORECAST_CAVEAT } from "../domain/disclaimers.js";
-import { inHourRange, upcoming } from "../domain/time.js";
+import { forecastDaysAhead, inHourRange, withinNextDays } from "../domain/time.js";
 import { summarizeWindByDay, windRow } from "../domain/wind.js";
 import type { WeatherService } from "../openmeteo/client.js";
 import { getWindForecastOutput as outputSchema } from "./outputs.js";
@@ -39,8 +39,8 @@ export function registerGetWindForecast(server: McpServer, service: WeatherServi
     safely(async ({ days, start_hour, end_hour, ...where }) => {
       assertHourRange(start_hour, end_hour);
       const location = await service.resolveLocation(where);
-      const forecast = await service.getWeather(location, { days, cell: "sea" });
-      const ahead = upcoming(forecast.hours, forecast.currentHour);
+      const forecast = await service.getWeather(location, { days: forecastDaysAhead(days), cell: "sea" });
+      const ahead = withinNextDays(forecast.hours, forecast.currentHour, days);
 
       return jsonResult(outputSchema, {
         location: describeLocation(location, forecast.timezone),

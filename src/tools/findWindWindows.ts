@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod";
 import { FORECAST_CAVEAT } from "../domain/disclaimers.js";
-import { inHourRange, upcoming } from "../domain/time.js";
+import { forecastDaysAhead, inHourRange, withinNextDays } from "../domain/time.js";
 import {
   explainRejections,
   findWindWindows,
@@ -71,8 +71,11 @@ export function registerFindWindWindows(server: McpServer, service: WeatherServi
       const range = windRangeFrom(args);
 
       const location = await service.resolveLocation(args);
-      const forecast = await service.getWeather(location, { days: args.days, cell: "sea" });
-      const ahead = upcoming(forecast.hours, forecast.currentHour);
+      const forecast = await service.getWeather(location, {
+        days: forecastDaysAhead(args.days),
+        cell: "sea",
+      });
+      const ahead = withinNextDays(forecast.hours, forecast.currentHour, args.days);
 
       const criteria: WindCriteria = {
         minWindKn: range.minWindKn,

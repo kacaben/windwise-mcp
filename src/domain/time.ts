@@ -37,6 +37,23 @@ export function upcoming<T extends { time: string }>(hours: readonly T[], curren
 }
 
 /**
+ * Open-Meteo's `forecast_days` counts calendar days from local midnight, so a
+ * request for N days made in the evening covers far less than N * 24 hours from
+ * now. Ask for one extra day, then trim with `withinNextDays`.
+ */
+export const forecastDaysAhead = (days: number): number => Math.min(MAX_FORECAST_DAYS, days + 1);
+
+/** Hours from the current hour up to (excluding) `days` * 24 hours later. */
+export function withinNextDays<T extends { time: string }>(
+  hours: readonly T[],
+  currentHour: string,
+  days: number,
+): T[] {
+  const end = addHours(currentHour, days * 24);
+  return upcoming(hours, currentHour).filter((hour) => hour.time < end);
+}
+
+/**
  * True when the hour slot starting at `time` falls in [startHour, endHour).
  * `endHour` is exclusive: 9–18 means the 09:00 slot through the 17:00 slot.
  */

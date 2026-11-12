@@ -65,6 +65,32 @@ describe("getJson", () => {
       getJson("https://example.test", {}, { fetch, timeoutMs: 20, retries: 0 }),
     ).rejects.toMatchObject({ kind: "timeout" });
   });
+
+  it("reports a timeout while reading the body as a timeout, and retries it (#5)", async () => {
+    const slowBody = {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => {
+        throw new DOMException("The operation timed out.", "TimeoutError");
+      },
+    } as unknown as Response;
+    const fetch = vi.fn<FetchLike>(async () => slowBody);
+    await expect(
+      getJson("https://example.test", {}, { fetch, retries: 1, ...fastRetry }),
+    ).rejects.toMatchObject({
+      kind: "timeout",
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("still reports a genuinely non-JSON body as an upstream error", async () => {
+    const fetch = vi.fn<FetchLike>(async () => new Response("<html>oops</html>", { status: 200 }));
+    await expect(getJson("https://example.test", {}, { fetch, retries: 0 })).rejects.toMatchObject({
+      kind: "upstream",
+      status: 200,
+    });
+  });
 });
 
 describe("columnsToRows", () => {
