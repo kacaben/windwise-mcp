@@ -1,6 +1,6 @@
 import { groupBy, max, mean, present } from "./stats.js";
 import { dateOf, inHourRange } from "./time.js";
-import { type CompassPoint, circularMeanDegrees, degreesToCompass } from "./units.js";
+import { type CompassPoint, circularMeanDegrees, degreesToCompass, round } from "./units.js";
 
 export interface MarineSample {
   time: string;
@@ -22,50 +22,59 @@ export interface WaveAssessment {
   note: string;
 }
 
+/** Sea-state levels from calmest to roughest, with the wave height each one starts below. */
+const SEA_STATES: ReadonlyArray<{ belowM: number; assessment: Omit<WaveAssessment, "note">; note: string }> =
+  [
+    {
+      belowM: 0.3,
+      assessment: { seaState: "flat", suitableFor: "everyone", beginnerFriendly: true },
+      note: "Flat water.",
+    },
+    {
+      belowM: 0.8,
+      assessment: { seaState: "small", suitableFor: "beginners", beginnerFriendly: true },
+      note: "Small waves; manageable for most beginners.",
+    },
+    {
+      belowM: 1.5,
+      assessment: { seaState: "moderate", suitableFor: "intermediate", beginnerFriendly: false },
+      note: "Moderate waves; beginners should stay inside the break or skip it.",
+    },
+    {
+      belowM: 2.5,
+      assessment: { seaState: "large", suitableFor: "advanced", beginnerFriendly: false },
+      note: "Large waves; advanced riders only.",
+    },
+    {
+      belowM: Infinity,
+      assessment: { seaState: "very_large", suitableFor: "experts_only", beginnerFriendly: false },
+      note: "Very large waves; dangerous for most riders.",
+    },
+  ];
+
+/** Shorter than this, waves are wind chop rather than swell. */
+export const CHOP_PERIOD_S = 6;
+/** Chop below this height is too small to matter. */
+export const CHOP_MIN_HEIGHT_M = 0.5;
+
 /**
- * Rough sea-state rating for small-craft water sports (wing, kite, SUP, windsurf).
- * Thresholds are deliberately conservative, and short-period chop is rated one
- * step harder than long, rolling swell of the same height.
+ * Rough sea-state rating for small-craft water sports (wing, kite, windsurf).
+ * Thresholds are deliberately conservative. Short-period chop of 0.5 m or more
+ * is rated one level rougher than swell of the same height, because it is
+ * steeper, closer together and harder to ride through.
  */
 export function assessWaves(heightM: number, periodS: number | null = null): WaveAssessment {
-  const choppy = periodS !== null && periodS < 6 && heightM >= 0.5;
-
-  if (heightM < 0.3) {
-    return { seaState: "flat", suitableFor: "everyone", beginnerFriendly: true, note: "Flat water." };
-  }
-  if (heightM < 0.8 && !choppy) {
-    return {
-      seaState: "small",
-      suitableFor: "beginners",
-      beginnerFriendly: true,
-      note: "Small waves; manageable for most beginners.",
-    };
-  }
-  if (heightM < 1.5) {
-    return {
-      seaState: "moderate",
-      suitableFor: "intermediate",
-      beginnerFriendly: false,
-      note: choppy
-        ? "Short-period chop; tiring and awkward for beginners."
-        : "Moderate waves; beginners should stay inside the break or skip it.",
-    };
-  }
-  if (heightM < 2.5) {
-    return {
-      seaState: "large",
-      suitableFor: "advanced",
-      beginnerFriendly: false,
-      note: "Large waves; advanced riders only.",
-    };
-  }
+  const choppy = periodS !== null && periodS < CHOP_PERIOD_S && heightM >= CHOP_MIN_HEIGHT_M;
+  const byHeight = SEA_STATES.findIndex((level) => heightM < level.belowM);
+  const level = SEA_STATES[Math.min(byHeight + (choppy ? 1 : 0), SEA_STATES.length - 1)]!;
   return {
-    seaState: "very_large",
-    suitableFor: "experts_only",
-    beginnerFriendly: false,
-    note: "Very large waves; dangerous for most riders.",
+    ...level.assessment,
+    note: choppy ? `Short-period chop (${round(heightM, 1)} m). ${level.note}` : level.note,
   };
 }
+
+/** Index of a sea state from calmest (0) to roughest, for picking the worst hour. */
+const severity = (state: SeaState) => SEA_STATES.findIndex((level) => level.assessment.seaState === state);
 
 export interface DailyMarine {
   date: string;
@@ -86,8 +95,6 @@ export function summarizeMarineByDay(
 ): DailyMarine[] {
   const inRange = hours.filter((h) => inHourRange(h.time, startHour, endHour));
   return [...groupBy(inRange, (h) => dateOf(h.time))].map(([date, dayHours]) => {
-    const maxWave = max(dayHours.map((h) => h.waveHeightM));
-    const avgPeriod = mean(dayHours.map((h) => h.wavePeriodS));
     const swellMean = circularMeanDegrees(present(dayHours.map((h) => h.swellDirectionDeg)));
     return {
       date,
@@ -95,14 +102,27 @@ export function summarizeMarineByDay(
         dayHours.map((h) => h.waveHeightM),
         2,
       ),
-      maxWaveHeightM: maxWave,
-      avgWavePeriodS: avgPeriod,
+      maxWaveHeightM: max(dayHours.map((h) => h.waveHeightM)),
+      avgWavePeriodS: mean(dayHours.map((h) => h.wavePeriodS)),
       swellDirection: swellMean === null ? null : degreesToCompass(swellMean),
       avgSwellPeriodS: mean(dayHours.map((h) => h.swellPeriodS)),
       seaTemperatureC: mean(dayHours.map((h) => h.seaTemperatureC)),
       maxCurrentKn: max(dayHours.map((h) => h.currentKn)),
-      // Rate the day by its worst hour: that's the one that catches people out.
-      assessment: maxWave === null ? null : assessWaves(maxWave, avgPeriod),
+      assessment: worstHour(dayHours),
     };
   });
+}
+
+/**
+ * Rate a day by its worst hour: that's the one that catches people out. Each
+ * hour is rated with its own period, so 1.2 m of chop can outrank 1.4 m of swell.
+ */
+export function worstHour(hours: readonly MarineSample[]): WaveAssessment | null {
+  let worst: WaveAssessment | null = null;
+  for (const hour of hours) {
+    if (hour.waveHeightM === null) continue;
+    const assessment = assessWaves(hour.waveHeightM, hour.wavePeriodS);
+    if (!worst || severity(assessment.seaState) > severity(worst.seaState)) worst = assessment;
+  }
+  return worst;
 }

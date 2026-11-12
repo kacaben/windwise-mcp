@@ -8,9 +8,9 @@ import { max, mean } from "../domain/stats.js";
 import { dateOf, forecastDaysFor, resolveDay } from "../domain/time.js";
 import { dominantDirection, findWindWindows, type WindCriteria } from "../domain/wind.js";
 import type { WeatherService } from "../openmeteo/client.js";
+import { NoMarineDataError } from "../openmeteo/marine.js";
 import { compareLocationsOutput as outputSchema } from "./outputs.js";
 import {
-  assertHourRange,
   daySelector,
   endHour,
   errorMessage,
@@ -19,7 +19,7 @@ import {
   safely,
   startHour,
   windCriteriaFields,
-  windRangeFrom,
+  windSearch,
 } from "./shared.js";
 
 const inputSchema = z.object({
@@ -40,12 +40,20 @@ const inputSchema = z.object({
 
 type Args = z.infer<typeof inputSchema>;
 
+interface ScoredLocation extends LocationScore {
+  date: string;
+  resolvedAs: string;
+  gridPoint: string;
+  /** Why there is no wave height for this spot, when marine data was asked for but not available. */
+  marineGap: string | null;
+}
+
 async function scoreLocation(
   service: WeatherService,
   name: string,
   args: Args,
   criteria: WindCriteria,
-): Promise<LocationScore & { date: string; resolvedAs: string; gridPoint: string }> {
+): Promise<ScoredLocation> {
   const location = await service.resolveLocation({ location: name });
   const days = forecastDaysFor(args.day);
   const forecast = await service.getWeather(location, { days, cell: "sea" });
@@ -60,13 +68,20 @@ async function scoreLocation(
 
   const windows = findWindWindows(dayHours, criteria);
 
+  // Marine data is a bonus here: a spot without it still gets a wind ranking,
+  // but the reason is reported, and unexpected errors are logged by errorMessage.
   let maxWaveHeightM: number | null = null;
+  let marineGap: string | null = null;
   if (args.include_marine) {
     try {
       const marine = await service.getMarine(location, days);
       maxWaveHeightM = max(selectSessionHours(marine.hours, session).map((h) => h.waveHeightM));
-    } catch {
-      // Marine data is a bonus here; an inland spot still gets a wind ranking.
+      if (maxWaveHeightM === null) marineGap = "no wave data for the session hours";
+    } catch (error) {
+      marineGap =
+        error instanceof NoMarineDataError
+          ? "no marine data (inland or sheltered water)"
+          : errorMessage(error);
     }
   }
 
@@ -82,6 +97,7 @@ async function scoreLocation(
     maxGustKn: max(dayHours.map((h) => h.gustKn)),
     direction: dominantDirection(dayHours),
     maxWaveHeightM,
+    marineGap,
   };
 }
 
@@ -100,17 +116,7 @@ export function registerCompareLocations(server: McpServer, service: WeatherServ
       annotations: READ_ONLY,
     },
     safely(async (args) => {
-      assertHourRange(args.start_hour, args.end_hour);
-      const range = windRangeFrom(args);
-      const criteria: WindCriteria = {
-        minWindKn: range.minWindKn,
-        maxWindKn: range.maxWindKn,
-        maxGustKn: range.maxGustKn,
-        startHour: args.start_hour,
-        endHour: args.end_hour,
-        minWindowHours: args.min_window_hours,
-        excludeThunderstorms: true,
-      };
+      const { activity, criteria, windRangeKn } = windSearch(args);
 
       // One bad place name shouldn't sink the whole comparison.
       const settled = await Promise.allSettled(
@@ -132,19 +138,35 @@ export function registerCompareLocations(server: McpServer, service: WeatherServ
           "identical; the model cannot tell them apart. Local knowledge decides between them.",
       );
 
+      // "today" is resolved at each spot, so spots in different time zones can land on different dates.
+      const dates = [...new Set(scores.map((s) => s.date))];
+      const dateNote =
+        dates.length > 1
+          ? [
+              `The spots are in different time zones, so "${args.day}" means different dates: ` +
+                `${scores.map((s) => `${s.location} ${s.date}`).join(", ")}. Compare with an explicit date ` +
+                "to rank the same day everywhere.",
+            ]
+          : [];
+      const marineGaps = scores.flatMap((s) =>
+        s.marineGap ? [`No wave height for ${s.location}: ${s.marineGap}.`] : [],
+      );
+      const anyWaves = scores.some((s) => s.maxWaveHeightM !== null);
+
       return jsonResult(outputSchema, {
-        date: scores[0]!.date,
+        date: dates.length === 1 ? dates[0]! : null,
         hours: { start: args.start_hour, end: args.end_hour },
-        activity: range.activity,
-        windRangeKn: {
-          min: range.minWindKn,
-          max: range.maxWindKn ?? null,
-          maxGust: range.maxGustKn ?? null,
-          minWindowHours: args.min_window_hours,
-        },
-        ranking: rankLocations(scores),
+        activity,
+        windRangeKn,
+        ranking: rankLocations(scores).map(({ marineGap: _, ...row }) => row),
         ...(failures.length > 0 && { failures }),
-        notes: [...sameCell, FORECAST_CAVEAT, ...(args.include_marine ? [MARINE_CAVEAT] : [])],
+        notes: [
+          ...dateNote,
+          ...sameCell,
+          ...marineGaps,
+          FORECAST_CAVEAT,
+          ...(anyWaves ? [MARINE_CAVEAT] : []),
+        ],
       });
     }),
   );

@@ -16,9 +16,25 @@ describe("assessWaves", () => {
     expect(assessWaves(height, period)).toMatchObject({ seaState, beginnerFriendly });
   });
 
-  it("rates short-period chop harder than swell of the same height", () => {
-    expect(assessWaves(0.6, 12).seaState).toBe("small");
-    expect(assessWaves(0.6, 4).seaState).toBe("moderate");
+  it.each([
+    [0.6, "small", "moderate"],
+    [1.0, "moderate", "large"],
+    [2.0, "large", "very_large"],
+    [3.0, "very_large", "very_large"], // already the roughest level
+  ] as const)("rates %d m of short-period chop one level above swell", (height, swell, chop) => {
+    expect(assessWaves(height, 12).seaState).toBe(swell);
+    expect(assessWaves(height, 4).seaState).toBe(chop);
+  });
+
+  it("says when the rating comes from chop", () => {
+    expect(assessWaves(1.0, 4).note).toMatch(/^Short-period chop \(1 m\)\. Large waves/);
+    expect(assessWaves(1.0, 10).note).not.toMatch(/chop/);
+  });
+
+  it("does not treat small or long-period waves as chop", () => {
+    expect(assessWaves(0.4, 3).seaState).toBe("small"); // below the chop height
+    expect(assessWaves(0.6, 6).seaState).toBe("small"); // 6 s is not short-period
+    expect(assessWaves(0.2, 3).seaState).toBe("flat");
   });
 });
 
@@ -34,6 +50,21 @@ describe("summarizeMarineByDay", () => {
       seaTemperatureC: 28,
       assessment: { seaState: "moderate" },
     });
+  });
+
+  it("rates each hour with its own period, so short chop can outrank taller swell", () => {
+    const hours = marineDay("2026-11-07", 0.5, 12);
+    // 1.4 m of long swell at 10:00 is "moderate"; 1.0 m of 4 s chop at 15:00 is "large".
+    hours[10]!.waveHeightM = 1.4;
+    hours[15]!.waveHeightM = 1.0;
+    hours[15]!.wavePeriodS = 4;
+    const [day] = summarizeMarineByDay(hours, 9, 18);
+    expect(day).toMatchObject({ maxWaveHeightM: 1.4, assessment: { seaState: "large" } });
+  });
+
+  it("has no assessment for a day without wave data", () => {
+    const hours = marineDay("2026-11-07", 0.5).map((h) => ({ ...h, waveHeightM: null }));
+    expect(summarizeMarineByDay(hours)[0]!.assessment).toBeNull();
   });
 });
 
@@ -76,7 +107,7 @@ describe("sessionVerdict", () => {
     expect(result.reasons[0]).toMatch(/shorter than 2 hours/);
   });
 
-  it("blames the wind direction when strength is right but the direction is excluded (#3)", () => {
+  it("blames the wind direction when strength is right but the direction is excluded", () => {
     const result = sessionVerdict({
       ...base,
       windows: [],
@@ -87,7 +118,7 @@ describe("sessionVerdict", () => {
     expect(result.reasons[0]).toMatch(/right for 5 hour\(s\), but it blows from a direction you excluded/);
   });
 
-  it("blames short stretches over 'too windy' when some hours are usable (#3)", () => {
+  it("blames short stretches over 'too windy' when some hours are usable", () => {
     const result = sessionVerdict({
       ...base,
       windows: [],
@@ -100,12 +131,52 @@ describe("sessionVerdict", () => {
     expect(result.reasons[0]).not.toMatch(/Too windy/);
   });
 
-  it("blames gusts when only the gust limit rejects the hours (#3)", () => {
+  it("blames gusts when only the gust limit rejects the hours", () => {
     const result = sessionVerdict({ ...base, windows: [], maxWindKn: 15, rejections: { too_gusty: 4 } });
     expect(result.reasons[0]).toMatch(/gusts exceed your gust limit/);
   });
 
-  it("flags unknown sea state as marginal when wave data failed to load (#2)", () => {
+  it("leads with the reason that rejected the most hours, and lists the rest", () => {
+    // One gusty hour must not hide eight calm ones.
+    const result = sessionVerdict({
+      ...base,
+      windows: [],
+      maxWindKn: 13,
+      rejections: { too_light: 8, too_gusty: 1 },
+    });
+    expect(result.reasons[0]).toBe(
+      "Mostly not enough wind: 8 hour(s) are below the 12 kn minimum. Other hours: 1 too gusty.",
+    );
+  });
+
+  it("breaks ties with the more specific reason", () => {
+    const result = sessionVerdict({
+      ...base,
+      windows: [],
+      maxWindKn: 15,
+      rejections: { too_light: 3, wrong_direction: 3 },
+    });
+    expect(result.reasons[0]).toMatch(
+      /^The wind strength is right for 3 hour\(s\).*Other hours: 3 too light\.$/,
+    );
+  });
+
+  it("explains a session ruled out only by thunderstorms", () => {
+    const result = sessionVerdict({
+      ...base,
+      windows: [],
+      maxWindKn: 15,
+      thunderstormHours: 9,
+      rejections: { thunderstorm: 9 },
+    });
+    expect(result.reasons).toEqual([
+      "Thunderstorms forecast in 9 of the session hours.",
+      "Every hour that could count has thunderstorms forecast.",
+      expect.any(String), // the wave note
+    ]);
+  });
+
+  it("flags unknown sea state as marginal when wave data failed to load", () => {
     const result = sessionVerdict({
       ...base,
       waves: null,
@@ -117,7 +188,7 @@ describe("sessionVerdict", () => {
     expect(result.reasons.join(" ")).toMatch(/sea state is unknown/);
   });
 
-  it("only notes missing wave data for inland points, without downgrading (#2)", () => {
+  it("only notes missing wave data for inland points, without downgrading", () => {
     const result = sessionVerdict({
       ...base,
       waves: null,

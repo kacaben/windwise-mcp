@@ -32,7 +32,7 @@ describe("resolveWindRange", () => {
     expect(() => resolveWindRange({ minWindKn: 20, maxWindKn: 15 })).toThrow(/below the minimum/);
   });
 
-  it("says when the conflicting maximum came from the preset, not the caller (#4)", () => {
+  it("says when the conflicting maximum came from the preset, not the caller", () => {
     expect(() => resolveWindRange({ activity: "dinghy_sailing", minWindKn: 20 })).toThrow(
       /Dinghy sailing preset caps wind at 18 kn, below your minimum of 20 kn.*max_wind_knots/,
     );

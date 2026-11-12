@@ -107,6 +107,64 @@ export function fakeService(options: {
   };
 }
 
+const FORECAST_HOURLY = [
+  "temperature_2m",
+  "apparent_temperature",
+  "precipitation_probability",
+  "precipitation",
+  "cloud_cover",
+  "weather_code",
+  "wind_speed_10m",
+  "wind_gusts_10m",
+  "wind_direction_10m",
+];
+const FORECAST_CURRENT = FORECAST_HOURLY.filter((key) => key !== "precipitation_probability");
+const MARINE_HOURLY = [
+  "wave_height",
+  "wave_direction",
+  "wave_period",
+  "wind_wave_height",
+  "swell_wave_height",
+  "swell_wave_direction",
+  "swell_wave_period",
+  "sea_surface_temperature",
+  "ocean_current_velocity",
+  "ocean_current_direction",
+];
+
+const nullSeries = (keys: readonly string[], length: number) =>
+  Object.fromEntries(keys.map((key) => [key, Array.from({ length }, () => null)]));
+const nullValues = (keys: readonly string[]) => Object.fromEntries(keys.map((key) => [key, null]));
+
+/**
+ * A complete Open-Meteo forecast body (every requested variable, all null),
+ * with `hourly` and `current` values overridden where a test cares.
+ */
+export function forecastBody(
+  times: string[],
+  hourly: Record<string, unknown> = {},
+  current: Record<string, unknown> = {},
+) {
+  return {
+    latitude: 20.7,
+    longitude: -105.27,
+    timezone: "America/Bahia_Banderas",
+    current: { time: `${times[0]!.slice(0, 11)}16:30`, ...nullValues(FORECAST_CURRENT), ...current },
+    hourly: { time: times, ...nullSeries(FORECAST_HOURLY, times.length), ...hourly },
+  };
+}
+
+/** A complete Open-Meteo marine body, with `hourly` overridden where a test cares. */
+export function marineBody(times: string[], hourly: Record<string, unknown> = {}) {
+  return {
+    latitude: 48.8,
+    longitude: 2.3,
+    timezone: "Europe/Paris",
+    utc_offset_seconds: 3600,
+    hourly: { time: times, ...nullSeries(MARINE_HOURLY, times.length), ...hourly },
+  };
+}
+
 /** Minimal Response stand-in for fetch fakes. */
 export function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {

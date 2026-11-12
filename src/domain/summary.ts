@@ -28,6 +28,70 @@ export interface VerdictInput {
   rejections?: Partial<Record<RejectionReason, number>> | undefined;
 }
 
+/** Rejection reasons that explain an empty result, in tie-break order (most specific first). */
+const EXPLAINING_REASONS = ["wrong_direction", "too_gusty", "too_strong", "too_light", "no_data"] as const;
+
+const REASON_LABELS: Record<(typeof EXPLAINING_REASONS)[number], string> = {
+  wrong_direction: "from an excluded direction",
+  too_gusty: "too gusty",
+  too_strong: "too windy",
+  too_light: "too light",
+  no_data: "no data",
+};
+
+/**
+ * Why no window was found. Leads with the reason that rejected the most hours
+ * (one gusty hour should not hide eight calm ones) and lists the others after it.
+ */
+function noWindowReason(input: VerdictInput, maxWindKn: number | null): string {
+  if (maxWindKn === null) return "No wind data for the requested hours.";
+  if ((input.usableHours ?? 0) > 0) {
+    return `${input.usableHours} hour(s) meet your wind criteria, but never ${input.minWindowHours} in a row.`;
+  }
+
+  const counted = EXPLAINING_REASONS.map((reason) => ({ reason, hours: input.rejections?.[reason] ?? 0 }))
+    .filter((r) => r.hours > 0)
+    // Array.sort is stable, so equal counts keep the tie-break order above.
+    .sort((a, b) => b.hours - a.hours);
+  const [main, ...others] = counted;
+  const also =
+    others.length > 0
+      ? ` Other hours: ${others.map((r) => `${r.hours} ${REASON_LABELS[r.reason]}`).join(", ")}.`
+      : "";
+
+  switch (main?.reason) {
+    case "wrong_direction":
+      return (
+        `The wind strength is right for ${main.hours} hour(s), but it blows from a direction you excluded.` +
+        also
+      );
+    case "too_gusty":
+      return `The average wind is in range for ${main.hours} hour(s), but gusts exceed your gust limit.${also}`;
+    case "too_strong":
+      return `Too windy: up to ${maxWindKn} kn, above the ${input.maxWindLimitKn} kn limit.${also}`;
+    case "too_light":
+      return maxWindKn < input.minWindKn
+        ? `Not enough wind: peaks at ${maxWindKn} kn, below the ${input.minWindKn} kn minimum.${also}`
+        : `Mostly not enough wind: ${main.hours} hour(s) are below the ${input.minWindKn} kn minimum.${also}`;
+    case "no_data":
+      return `No wind data for ${main.hours} of the session hours.${also}`;
+    default:
+      break;
+  }
+
+  // No per-hour breakdown (or only thunderstorm hours): judge from the peak wind alone.
+  if ((input.rejections?.thunderstorm ?? 0) > 0) {
+    return "Every hour that could count has thunderstorms forecast.";
+  }
+  if (maxWindKn < input.minWindKn) {
+    return `Not enough wind: peaks at ${maxWindKn} kn, below the ${input.minWindKn} kn minimum.`;
+  }
+  if (input.maxWindLimitKn !== undefined && maxWindKn > input.maxWindLimitKn) {
+    return `Too windy: up to ${maxWindKn} kn, above the ${input.maxWindLimitKn} kn limit.`;
+  }
+  return `The wind is in range only in stretches shorter than ${input.minWindowHours} hours, or is too gusty.`;
+}
+
 /**
  * Turn the numbers into a single go / marginal / no-go call with reasons.
  * Reasons are written for the agent to relay, not for a UI.
@@ -45,37 +109,7 @@ export function sessionVerdict(input: VerdictInput): { verdict: Verdict; reasons
   }
 
   if (input.windows.length === 0) {
-    if (input.maxWindKn === null) {
-      downgrade("no_go", "No wind data for the requested hours.");
-    } else if ((input.usableHours ?? 0) > 0) {
-      downgrade(
-        "no_go",
-        `${input.usableHours} hour(s) meet your wind criteria, but never ${input.minWindowHours} in a row.`,
-      );
-    } else if ((input.rejections?.wrong_direction ?? 0) > 0) {
-      downgrade(
-        "no_go",
-        `The wind strength is right for ${input.rejections!.wrong_direction} hour(s), but it blows ` +
-          "from a direction you excluded.",
-      );
-    } else if ((input.rejections?.too_gusty ?? 0) > 0) {
-      downgrade("no_go", "The average wind is in range, but gusts exceed your gust limit.");
-    } else if (input.maxWindKn < input.minWindKn) {
-      downgrade(
-        "no_go",
-        `Not enough wind: peaks at ${input.maxWindKn} kn, below the ${input.minWindKn} kn minimum.`,
-      );
-    } else if (input.maxWindLimitKn !== undefined && input.maxWindKn > input.maxWindLimitKn) {
-      downgrade(
-        "no_go",
-        `Too windy: up to ${input.maxWindKn} kn, above the ${input.maxWindLimitKn} kn limit.`,
-      );
-    } else {
-      downgrade(
-        "no_go",
-        `The wind is in range only in stretches shorter than ${input.minWindowHours} hours, or is too gusty.`,
-      );
-    }
+    downgrade("no_go", noWindowReason(input, input.maxWindKn));
   } else {
     const longest = Math.max(...input.windows.map((w) => w.durationHours));
     const best = input.windows.find((w) => w.durationHours === longest)!;

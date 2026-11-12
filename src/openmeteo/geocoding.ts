@@ -1,4 +1,6 @@
+import * as z from "zod";
 import { getJson, type HttpOptions } from "./http.js";
+import { parseResponse } from "./schemas.js";
 
 const GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search";
 
@@ -13,22 +15,23 @@ export interface ResolvedLocation {
   source: "geocoded" | "coordinates";
 }
 
-interface GeocodingResult {
-  name: string;
-  latitude: number;
-  longitude: number;
-  country?: string;
-  country_code?: string;
-  admin1?: string;
-  admin2?: string;
-  admin3?: string;
-  timezone?: string;
-  population?: number;
-}
+const geocodingResult = z.object({
+  name: z.string(),
+  latitude: z.number(),
+  longitude: z.number(),
+  country: z.string().optional(),
+  country_code: z.string().optional(),
+  admin1: z.string().optional(),
+  admin2: z.string().optional(),
+  admin3: z.string().optional(),
+  timezone: z.string().optional(),
+  population: z.number().optional(),
+});
 
-interface GeocodingResponse {
-  results?: GeocodingResult[];
-}
+type GeocodingResult = z.infer<typeof geocodingResult>;
+
+/** Open-Meteo omits `results` entirely when nothing matches. */
+const geocodingResponse = z.object({ results: z.array(geocodingResult).optional() });
 
 export class LocationNotFoundError extends Error {
   override name = "LocationNotFoundError";
@@ -115,12 +118,12 @@ export function createGeocoder(http: HttpOptions = {}, maxEntries = 500): Geocod
     const { name, qualifiers } = parseLocationQuery(query);
     if (name.length < 2) throw new LocationNotFoundError(query);
 
-    const response = await getJson<GeocodingResponse>(
+    const body = await getJson<unknown>(
       GEOCODING_URL,
       { name, count: 10, language: "en", format: "json" },
       http,
     );
-    const results = response.results ?? [];
+    const results = parseResponse(geocodingResponse, body, "geocoding").results ?? [];
     const best = pickBestResult(results, qualifiers);
     if (!best) throw new LocationNotFoundError(query, results.slice(0, 3).map(describeResult));
     return toResolved(best);
@@ -134,9 +137,13 @@ export function createGeocoder(http: HttpOptions = {}, maxEntries = 500): Geocod
         // Re-insert to mark as most recently used (Map keeps insertion order).
         cache.delete(key);
       } else {
-        pending = lookup(query);
-        // Don't cache failures: a timeout now shouldn't poison later calls.
-        pending.catch(() => cache.delete(key));
+        const lookingUp = lookup(query);
+        pending = lookingUp;
+        // Don't cache failures: a timeout now shouldn't poison later calls. Only remove
+        // this lookup, not a newer one stored under the same key after an eviction.
+        lookingUp.catch(() => {
+          if (cache.get(key) === lookingUp) cache.delete(key);
+        });
       }
       cache.set(key, pending);
       if (cache.size > maxEntries) cache.delete(cache.keys().next().value!);

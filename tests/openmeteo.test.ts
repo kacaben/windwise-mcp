@@ -9,7 +9,7 @@ import {
 } from "../src/openmeteo/geocoding.js";
 import { type FetchLike, getJson, OpenMeteoError } from "../src/openmeteo/http.js";
 import { fetchMarineForecast, NoMarineDataError } from "../src/openmeteo/marine.js";
-import { jsonResponse } from "./helpers.js";
+import { forecastBody, jsonResponse, marineBody } from "./helpers.js";
 
 const fastRetry = { retryDelayMs: 0 };
 
@@ -66,7 +66,7 @@ describe("getJson", () => {
     ).rejects.toMatchObject({ kind: "timeout" });
   });
 
-  it("reports a timeout while reading the body as a timeout, and retries it (#5)", async () => {
+  it("reports a timeout while reading the body as a timeout, and retries it", async () => {
     const slowBody = {
       ok: true,
       status: 200,
@@ -210,18 +210,13 @@ describe("geocoding", () => {
 describe("forecast and marine fetchers", () => {
   it("maps forecast columns to typed hours and requests knots in local time", async () => {
     const fetch = vi.fn<FetchLike>(async () =>
-      jsonResponse({
-        latitude: 20.7,
-        longitude: -105.27,
-        timezone: "America/Bahia_Banderas",
-        current: { time: "2026-11-06T16:30", wind_speed_10m: 7.3, weather_code: 0 },
-        hourly: {
-          time: ["2026-11-06T00:00"],
-          wind_speed_10m: [4.2],
-          wind_gusts_10m: [9],
-          wind_direction_10m: [300],
-        },
-      }),
+      jsonResponse(
+        forecastBody(
+          ["2026-11-06T00:00"],
+          { wind_speed_10m: [4.2], wind_gusts_10m: [9], wind_direction_10m: [300] },
+          { wind_speed_10m: 7.3, weather_code: 0 },
+        ),
+      ),
     );
     const forecast = await fetchWeatherForecast(
       { latitude: 20.75, longitude: -105.33 },
@@ -246,16 +241,115 @@ describe("forecast and marine fetchers", () => {
 
   it("raises NoMarineDataError for inland points (all-null wave data)", async () => {
     const fetch = vi.fn<FetchLike>(async () =>
-      jsonResponse({
-        latitude: 48.8,
-        longitude: 2.3,
-        timezone: "Europe/Paris",
-        utc_offset_seconds: 3600,
-        hourly: { time: ["2026-11-06T00:00", "2026-11-06T01:00"], wave_height: [null, null] },
-      }),
+      jsonResponse(marineBody(["2026-11-06T00:00", "2026-11-06T01:00"])),
     );
     await expect(
       fetchMarineForecast({ latitude: 48.85, longitude: 2.35 }, 1, { fetch }),
     ).rejects.toBeInstanceOf(NoMarineDataError);
+  });
+
+  it("maps marine columns to typed hours", async () => {
+    const fetch = vi.fn<FetchLike>(async () =>
+      jsonResponse(marineBody(["2026-11-06T00:00"], { wave_height: [0.8], swell_wave_period: [11] })),
+    );
+    const marine = await fetchMarineForecast({ latitude: 20.7, longitude: -105.3 }, 1, { fetch });
+    expect(marine.hours[0]).toMatchObject({ waveHeightM: 0.8, swellPeriodS: 11, currentKn: null });
+  });
+});
+
+describe("response validation", () => {
+  const times = ["2026-11-06T00:00", "2026-11-06T01:00"];
+  const coords = { latitude: 20.7, longitude: -105.3 };
+
+  async function forecastError(body: unknown) {
+    const fetch = vi.fn<FetchLike>(async () => jsonResponse(body));
+    const error = await fetchWeatherForecast(coords, { days: 1 }, { fetch, ...fastRetry }).then(
+      () => {
+        throw new Error("expected the response to be rejected");
+      },
+      (e: unknown) => e as OpenMeteoError,
+    );
+    return { error, calls: fetch.mock.calls.length };
+  }
+
+  it("names a hourly variable that disappeared from the response, and does not retry", async () => {
+    const body = forecastBody(times);
+    delete (body.hourly as Record<string, unknown>).wind_gusts_10m;
+    const { error, calls } = await forecastError(body);
+    expect(error).toBeInstanceOf(OpenMeteoError);
+    expect(error.kind).toBe("invalid_response");
+    expect(error.message).toContain("wind_gusts_10m");
+    expect(error.message).toContain("missing hourly variable");
+    expect(calls).toBe(1);
+  });
+
+  it("rejects a series whose length does not match the time axis", async () => {
+    const { error } = await forecastError(forecastBody(times, { wind_speed_10m: [5] }));
+    expect(error.message).toContain("has 1 values for 2 time steps");
+    expect(error.message).toContain("hourly.wind_speed_10m");
+  });
+
+  it("rejects non-numeric values and an unexpected time format", async () => {
+    expect((await forecastError(forecastBody(times, { wind_speed_10m: ["5", 6] }))).error.message).toContain(
+      "non-numeric",
+    );
+    expect(
+      (await forecastError(forecastBody(["2026-11-06T00:00:00Z", "2026-11-06T01:00:00Z"]))).error.message,
+    ).toContain("YYYY-MM-DDTHH:MM");
+  });
+
+  it("rejects an empty forecast instead of failing later on hours[0]", async () => {
+    const body = forecastBody(times);
+    body.hourly = { ...body.hourly, time: [] };
+    for (const key of Object.keys(body.hourly)) {
+      if (key !== "time") (body.hourly as Record<string, unknown>)[key] = [];
+    }
+    expect((await forecastError(body)).error.message).toContain("no hourly time steps");
+  });
+
+  it("rejects a missing current value", async () => {
+    const body = forecastBody(times);
+    delete (body.current as Record<string, unknown>).wind_speed_10m;
+    expect((await forecastError(body)).error.message).toContain("missing or non-numeric current value");
+  });
+
+  it("validates marine and geocoding responses too", async () => {
+    const marineFetch = vi.fn<FetchLike>(async () => jsonResponse({ hourly: { time: times } }));
+    await expect(fetchMarineForecast(coords, 1, { fetch: marineFetch })).rejects.toMatchObject({
+      kind: "invalid_response",
+    });
+
+    const geoFetch = vi.fn<FetchLike>(async () => jsonResponse({ results: [{ name: "Bucerias" }] }));
+    await expect(createGeocoder({ fetch: geoFetch }).resolve("Bucerias")).rejects.toMatchObject({
+      kind: "invalid_response",
+    });
+  });
+});
+
+describe("geocoder cache", () => {
+  it("does not let an evicted, failing lookup remove a newer entry for the same place", async () => {
+    let failFirst: (reason: Error) => void = () => {};
+    const fetch = vi
+      .fn<FetchLike>()
+      .mockImplementationOnce(
+        () =>
+          new Promise<Response>((_resolve, reject) => {
+            failFirst = reject;
+          }),
+      )
+      .mockImplementation(async () =>
+        jsonResponse({ results: [{ name: "San Jose", latitude: 37.3, longitude: -121.9 }] }),
+      );
+    const geocoder = createGeocoder({ fetch, retries: 0 }, 1);
+
+    const first = geocoder.resolve("San Jose").catch(() => "failed");
+    await geocoder.resolve("Other"); // evicts the pending "San Jose" lookup
+    await geocoder.resolve("San Jose"); // a fresh lookup, now cached
+    failFirst(new TypeError("fetch failed"));
+    expect(await first).toBe("failed");
+
+    const calls = fetch.mock.calls.length;
+    await geocoder.resolve("San Jose");
+    expect(fetch.mock.calls.length).toBe(calls); // still served from the cache
   });
 });

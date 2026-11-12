@@ -7,7 +7,9 @@
  * - turning Open-Meteo's `{ error: true, reason }` payloads into typed errors
  */
 
-export const USER_AGENT = "windwise-mcp/0.1.0";
+import { VERSION } from "../version.js";
+
+export const USER_AGENT = `windwise-mcp/${VERSION}`;
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -19,7 +21,11 @@ export interface HttpOptions {
   retryDelayMs?: number;
 }
 
-export type OpenMeteoErrorKind = "bad_request" | "upstream" | "timeout" | "network";
+/**
+ * `invalid_response` means the API answered but not in the shape we expect,
+ * which usually means it changed. Retrying will not help.
+ */
+export type OpenMeteoErrorKind = "bad_request" | "upstream" | "timeout" | "network" | "invalid_response";
 
 export class OpenMeteoError extends Error {
   constructor(

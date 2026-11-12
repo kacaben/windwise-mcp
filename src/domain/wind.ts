@@ -124,6 +124,19 @@ export function findWindWindows(hours: readonly WindSample[], criteria: WindCrit
   return windows;
 }
 
+/** Longest window wins; ties go to the stronger average wind. */
+export function bestWindow(windows: readonly WindWindow[]): WindWindow | null {
+  return windows.reduce<WindWindow | null>(
+    (best, w) =>
+      !best ||
+      w.durationHours > best.durationHours ||
+      (w.durationHours === best.durationHours && w.avgWindKn > best.avgWindKn)
+        ? w
+        : best,
+    null,
+  );
+}
+
 /** Count rejection reasons among in-range hours, to explain empty results. */
 export function explainRejections(
   hours: readonly WindSample[],
@@ -148,14 +161,19 @@ export interface DailyWind {
   peakBeaufort: string | null;
 }
 
+/** The hour with the strongest sustained wind (the earliest on a tie), or null without data. */
+export function peakHour<T extends WindSample>(hours: readonly T[]): T | null {
+  return hours.reduce<T | null>(
+    (best, h) => (h.windKn !== null && (best?.windKn ?? -1) < h.windKn ? h : best),
+    null,
+  );
+}
+
 /** Per-day wind rollup restricted to an hour range (e.g. daylight 9–18). */
 export function summarizeWindByDay(hours: readonly WindSample[], startHour = 0, endHour = 24): DailyWind[] {
   const inRange = hours.filter((h) => inHourRange(h.time, startHour, endHour));
   return [...groupBy(inRange, (h) => dateOf(h.time))].map(([date, dayHours]) => {
-    const peak = dayHours.reduce<WindSample | null>(
-      (best, h) => (h.windKn !== null && (best?.windKn ?? -1) < h.windKn ? h : best),
-      null,
-    );
+    const peak = peakHour(dayHours);
     const maxWindKn = peak?.windKn ?? null;
     return {
       date,

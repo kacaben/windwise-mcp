@@ -166,7 +166,10 @@ export const findWindWindowsOutput = z.object({
 });
 
 export const compareLocationsOutput = z.object({
-  date: z.string(),
+  date: z
+    .string()
+    .nullable()
+    .describe("The compared date; null when the spots' time zones put the day on different dates."),
   hours: hoursOutput,
   activity: z.string().nullable(),
   windRangeKn: windRangeOutput,

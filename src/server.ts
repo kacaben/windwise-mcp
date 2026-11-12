@@ -6,9 +6,10 @@ import { registerGetMarineConditions } from "./tools/getMarineConditions.js";
 import { registerGetWeather } from "./tools/getWeather.js";
 import { registerGetWeatherSummary } from "./tools/getWeatherSummary.js";
 import { registerGetWindForecast } from "./tools/getWindForecast.js";
+import { VERSION } from "./version.js";
 
 export const SERVER_NAME = "windwise-mcp";
-export const SERVER_VERSION = "0.1.0";
+export const SERVER_VERSION = VERSION;
 
 const INSTRUCTIONS = `WindWise gives you weather, wind and marine forecasts from Open-Meteo.
 - Wind speeds are in knots; wind and swell directions say where they come FROM.

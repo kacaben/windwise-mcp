@@ -19,12 +19,27 @@ uncertainty.
 
 ```
 (illustrative conversation)
-You:    Will there be enough wind for wing foiling in Bucerías tomorrow?
+You:    Is there a good time to go dinghy sailing tomorrow in Bucerías, Mexico?
 Agent:  → get_weather_summary { location: "Bucerias, Mexico", day: "tomorrow" }
-        Probably not. The forecast peaks at 5.2 kn around 17:00, well below a 12 kn
-        minimum. Skies are clear and it's 26–30 °C, with small 0.7 m waves from the WNW,
-        so it's a good SUP or swim day instead. (Open-Meteo model forecast; local
-        thermals can add a few knots.)
+        Tomorrow (Fri, Nov 13) looks light for dinghy sailing in Bucerías. The forecast calls it a no-go for a normal dinghy range of 10–18 kn.
+
+Wind
+
+It’s very light in the morning, about 3–4 kn from the east, and drifts around.
+The sea breeze fills in from the SW after about noon. It peaks around 1–2pm at 8 kn, gusting about 11–12 kn.
+It fades to roughly 4–6 kn by 5–6pm.
+
+Best window: about 12:30–3:30pm. That’s your only real chance, and it’s only 6–8 kn.
+
+Other conditions
+
+The sky is clear and it’s 24–29°C. The sea is 30°C.
+Waves are small, about 0.8 m on a long 12 s swell. That’s easy for beginners.
+There’s a 51% chance of a little rain (under 1 mm) and no thunderstorms.
+
+Verdict: a light-air day, good for a relaxed, flat-water sail if you’re happy with 6–8 kn. It’s not a day for planing or hiking out. A lighter boat, or one with a big rig, will be more fun than a heavy one. Saturday looks even lighter (about 5 kn, from the ENE).
+
+This is a model forecast, so check conditions on the beach. Local sea breezes can run several knots stronger or weaker than predicted. The data comes from Open-Meteo.
 ```
 
 ---
@@ -35,7 +50,7 @@ Agent:  → get_weather_summary { location: "Bucerias, Mexico", day: "tomorrow" 
 | ----------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | `get_weather`           | "What's the weather in Sayulita?"              | Weather codes → words, degrees → compass points, trims to the next _N_ hours                                        |
 | `get_wind_forecast`     | "When is the wind strongest between 10 and 5?" | Per-day rollup: average/peak/peak time, strongest gust, **circular-mean** prevailing direction, Beaufort            |
-| `get_marine_conditions` | "Are the waves OK for a beginner?"             | Sea-state rating that treats short-period chop as harder than swell; detects inland points                          |
+| `get_marine_conditions` | "Are the waves OK for a beginner?"             | Hour-by-hour sea-state rating; short-period chop rates one level rougher than swell; detects inland points          |
 | `find_wind_windows`     | "When is it 12–22 kn with gusts under 25?"     | Finds continuous windows across days, filters by direction and thunderstorms, **explains why** when nothing matches |
 | `compare_locations`     | "Bucerías or La Cruz tomorrow?"                | Ranks 2–5 spots, tolerates partial failures, **flags spots in the same model grid cell**                            |
 | `get_weather_summary`   | "Should I go out tomorrow?"                    | Combines weather and marine into a go / marginal / no-go verdict with human-readable reasons                        |
@@ -79,7 +94,7 @@ asks you to pass `max_wind_knots` as well.
   "directions": ["W", "WSW", "WNW", "SW"]   // onshore/cross-shore for this beach
 }
 
-// Output (illustrative values, abridged)
+// Output (example values, abridged)
 {
   "found": true,
   "bestWindow": {
@@ -92,7 +107,7 @@ asks you to pass `max_wind_knots` as well.
 }
 ```
 
-When nothing matches, the tool still gives the agent something useful to say:
+When nothing matches, the tool still gives the agent something useful to say (example values):
 
 ```jsonc
 {
@@ -104,98 +119,30 @@ When nothing matches, the tool still gives the agent something useful to say:
 
 ---
 
-## Architecture
-
-```mermaid
-flowchart TD
-    A["AI agent<br/>(Claude, ChatGPT, Cursor, ...)"] -- "MCP over stdio" --> S
-
-    subgraph S["WindWise MCP server"]
-        T["tools/<br/>6 MCP tools · Zod schemas · error mapping"]
-        D["domain/<br/>wind windows · sea state · verdicts · ranking<br/><i>pure functions, no I/O</i>"]
-        O["openmeteo/<br/>HTTP client · geocoding cache · column→row normalisation"]
-        T --> D
-        T --> O
-    end
-
-    O --> G["Open-Meteo<br/>Geocoding API"]
-    O --> W["Open-Meteo<br/>Forecast API"]
-    O --> M["Open-Meteo<br/>Marine API"]
-```
+## How it's built
 
 ```
-src/
-├── index.ts               # stdio entry point
-├── server.ts              # creates the McpServer and registers every tool
-├── tools/                 # MCP layer: schemas, descriptions, response shaping
-│   ├── shared.ts          #   shared input schemas, result/error helpers
-│   ├── outputs.ts         #   output schemas, type-checked against the domain types
-│   └── *.ts               #   one file per tool
-├── domain/                # business logic, pure and unit-tested
-│   ├── wind.ts            #   findWindWindows, summarizeWindByDay, rejection reasons
-│   ├── marine.ts          #   assessWaves, summarizeMarineByDay
-│   ├── summary.ts         #   sessionVerdict (go / marginal / no_go)
-│   ├── compare.ts         #   rankLocations, sharedGridCells
-│   ├── activities.ts      #   activity presets (wing foiling, dinghy sailing)
-│   ├── session.ts         #   the remaining hours of a day's session
-│   ├── units.ts           #   compass, circular mean, Beaufort, conversions
-│   ├── time.ts            #   time-zone-safe local time helpers, days-from-now trimming
-│   ├── stats.ts           #   null-safe mean / max / min / sum / groupBy
-│   ├── weatherCodes.ts    #   WMO weather codes → words, thunderstorm check
-│   ├── disclaimers.ts     #   attribution and forecast caveats
-│   └── errors.ts          #   ToolInputError (messages safe to show the model)
-└── openmeteo/             # integration layer
-    ├── http.ts            #   timeouts, retry with backoff, typed errors
-    ├── geocoding.ts       #   place search, disambiguation, bounded LRU cache
-    ├── forecast.ts        #   weather API → WeatherHour[]
-    ├── marine.ts          #   marine API → MarineHour[]
-    ├── columns.ts         #   column-wise API arrays → row records
-    └── client.ts          #   WeatherService interface (what tools depend on)
+AI agent ──MCP over stdio──▶ tools/      6 tools · Zod input/output schemas · error mapping
+                               ├──▶ domain/     pure functions: wind windows, sea state, verdicts, ranking
+                               └──▶ openmeteo/  HTTP with timeouts and retry · response validation · geocoding cache
 ```
 
-### Design decisions
+The highlights:
 
-- **Tools depend on an interface, not on HTTP.** `WeatherService` is injected into every
-  tool, so the integration tests run a real MCP client against the real server with a fake
-  service, with no network and no mocks of `fetch` at that level.
-- **Business logic is pure.** Everything in `domain/` takes arrays and returns data. That is
-  where the interesting behaviour lives, and it is where most of the tests are.
-- **Errors are for the model to read, bugs are for the developer.** Known failures come back
-  as `isError` tool results with an actionable message ("Did you mean: ...", 'try day
-  "tomorrow"'). Anything unexpected is logged to stderr and the model gets a generic message,
-  never internals like "Cannot read properties of undefined". Bad Open-Meteo requests (400)
-  are not retried. Timeouts, network errors, 429 and 5xx are retried once with backoff.
-- **Outputs are typed twice.** Each tool declares an `outputSchema`, and the SDK validates every
-  result against it at runtime. `jsonResult(schema, data)` also checks `data` against the
-  schema at compile time, and the shared schemas are typed against the domain interfaces, so
-  the published contract can't silently drift from the code.
-- **Wind over the water, not the town.** Open-Meteo snaps to a land grid cell by default. The
-  wind tools ask for `cell_selection=sea`, which picks the neighbouring water cell for a beach
-  and leaves inland points alone. For Bucerías that changes the 9:00 wind from 3.2 to 5.2 kn.
-  `get_weather` keeps the land cell, because it describes the weather in town.
-- **Forecasts start now.** Open-Meteo returns the day from midnight. Every tool drops the hours
-  that have already passed, and `get_weather_summary` for "today" judges only the rest of the
-  session, or says the session is over. A `days` argument means 24-hour periods from the
-  current hour (the server asks Open-Meteo for one extra calendar day and trims), so
-  `days: 1` at 22:30 still returns a full day ahead.
-- **Place qualifiers match whole words.** In "Sydney, US", `US` must be a country code or a
-  whole word in the country/region name, not any name containing the letters "us" (such as
-  "Australia").
-- **Local time only, with no time-zone arithmetic.** Requests use `timezone=auto`, so every
-  timestamp is already local to the spot. Times are handled as strings, so the server's own
-  time zone can never shift a forecast hour. "Today" means _today at the spot_, taken from
-  the forecast itself.
-- **Directions are averaged correctly.** The mean of 350° and 10° is 0°, not 180°.
-  Prevailing direction uses a vector (circular) mean.
-- **Honesty about uncertainty.** Every response carries a caveat. The marine caveat repeats
-  Open-Meteo's own warning about ~5 km resolution near coasts. `compare_locations` says
-  so when two towns share a model grid cell instead of pretending one is better. That
-  happens with Bucerías and La Cruz de Huanacaxtle.
-- **Graceful partial failure.** `get_weather_summary` still answers for a lake with no marine
-  data. `compare_locations` still ranks the spots it could resolve and lists the ones it couldn't.
-- **Agent-oriented descriptions.** Each tool description says when to use it rather than a
-  sibling tool. The server also sends `instructions` (units, local time, which tool to start
-  with) to clients that support them.
+- **Tools depend on an interface, not on HTTP.** The integration tests run a real MCP client
+  against the real server with a fake `WeatherService`, so there's no network and no `fetch` mocks.
+- **Business logic is pure.** Everything in `domain/` takes arrays and returns data, and that is
+  where most of the tests are.
+- **Errors are for the model, bugs are for the developer.** Known failures return actionable
+  `isError` results. Anything unexpected is logged and hidden from the model. Open-Meteo
+  responses are validated with Zod, so an API change becomes one clear error rather than silent nulls.
+- **Forecasts start now, in the spot's local time.** Hours that have already passed are never
+  offered, `days` means 24-hour periods from now, and times never pass through the server's time zone.
+- **Honest about uncertainty.** Every answer carries a caveat, and `compare_locations` says when
+  two towns share a forecast grid cell instead of pretending one is better.
+
+See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the layer diagram, the source tree,
+every design decision and how to add a tool.
 
 ---
 
@@ -262,33 +209,23 @@ npx @modelcontextprotocol/inspector node dist/index.js
 ### Tests
 
 - **Domain unit tests:** wind windows (gaps, limits, direction filters, thunderstorms,
-  midnight crossings, missing data), sea-state ratings, verdicts, ranking, activity presets,
-  units, local time and session-hour selection.
+  midnight crossings, missing data), sea-state ratings including chop and worst-hour rating,
+  verdict reasons, ranking, activity presets, units, local time and session-hour selection.
 - **Integration-layer tests:** query building, Open-Meteo error payloads, retry/backoff,
-  timeouts, geocoding disambiguation (including the "Sydney, US" regression), "did you mean"
-  suggestions, LRU eviction, column-to-row normalisation and inland detection. These use a
-  fake `fetch`.
-- **MCP server tests:** a real `Client` connected through `InMemoryTransport` checks tool
-  listing, input and output schemas, validation errors, past-hour filtering, grid-cell choice,
-  hidden internal errors and end-to-end tool behaviour with a fake `WeatherService`.
+  timeouts, response validation (missing variables, mismatched lengths, changed time format),
+  geocoding disambiguation (including the "Sydney, US" regression), "did you mean"
+  suggestions, LRU eviction and inland detection. These use a fake `fetch`.
+- **MCP server tests:** a real `Client` connected through `InMemoryTransport` checks every
+  tool's output, input and output schemas, validation errors, past-hour filtering, grid-cell
+  choice, partial failures in `compare_locations`, time-zone date mismatches and hidden
+  internal errors, with a fake `WeatherService`.
 
 CI runs lint, typecheck, tests and build on Node 22 and 24 for every push and pull request. A
 separate weekly workflow runs the live smoke test to catch upstream API changes.
 
 ### Adding a tool
 
-1. Put any new logic in `src/domain/` as pure functions, and unit-test it.
-2. Create `src/tools/yourTool.ts` exporting `registerYourTool(server, service)`:
-   - build the input schema with `withLocation({...})` from `tools/shared.ts`
-   - write a description that says _when_ an agent should pick this tool
-   - define its `outputSchema` in `tools/outputs.ts`
-   - wrap the handler in `safely(...)` and return `jsonResult(outputSchema, {...})`
-   - throw `ToolInputError` for problems the model should see and fix
-3. Add it to the `TOOLS` list in `src/server.ts`.
-4. Add a case to `tests/server.test.ts`, and a call to `scripts/smoke.ts`.
-
-If a tool needs new Open-Meteo data, add the variable to the relevant `HOURLY_VARIABLES`
-list in `src/openmeteo/` and map it onto the typed hour interface.
+See [Adding a tool](docs/ARCHITECTURE.md#adding-a-tool) in the architecture notes.
 
 ---
 
@@ -297,15 +234,15 @@ list in `src/openmeteo/` and map it onto the typed hour interface.
 - These are model forecasts. Sea breezes and thermal winds, which matter a lot in Banderas
   Bay, are often under-forecast by global models.
 - Marine data has ~5 km resolution and is less reliable inside bays and near the shore.
-- Wave ratings are deliberately simple and conservative. They are a hint, not safety advice.
+- Wave ratings are deliberately simple and conservative: height bands, with short-period
+  chop rated one level rougher than swell of the same height. They are a hint, not safety
+  advice, and they don't account for wave direction or the shape of the beach.
 - The go / marginal / no-go verdict looks at wind, gusts, thunderstorms and waves. It ignores
   rain, temperature and the rider's skill level.
 - The wind tools use the sea grid cell, so the temperature and rain in `get_weather_summary`
   describe the water cell, not the town. `get_weather` uses the land cell.
 - `compare_locations` takes place names only, not coordinates, and waves are just a
   tie-breaker in its ranking.
-- Open-Meteo responses are trusted as-is. A changed or missing field shows up as "no data"
-  instead of a clear API-changed error.
 - Forecasts are not cached (only place lookups are), and a rate-limited request is retried
   once after a short delay, ignoring `Retry-After`.
 - Prevailing direction is an unweighted vector mean, so a few calm hours from another
@@ -313,7 +250,6 @@ list in `src/openmeteo/` and map it onto the typed hour interface.
 
 Ideas for later:
 
-- [ ] Validate Open-Meteo responses with Zod at the boundary
 - [ ] Short-TTL forecast cache and `Retry-After` handling
 - [ ] Coordinates and a direction filter for `compare_locations`; weigh waves in the ranking
 - [ ] Skill-level input for the sea-state rating and verdict

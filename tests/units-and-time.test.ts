@@ -10,13 +10,7 @@ import {
   resolveDay,
   upcoming,
 } from "../src/domain/time.js";
-import {
-  beaufort,
-  circularMeanDegrees,
-  degreesToCompass,
-  kmhToKnots,
-  knotsToKmh,
-} from "../src/domain/units.js";
+import { beaufort, circularMeanDegrees, degreesToCompass } from "../src/domain/units.js";
 
 describe("degreesToCompass", () => {
   it.each([
@@ -61,13 +55,6 @@ describe("beaufort", () => {
   });
 });
 
-describe("unit conversion", () => {
-  it("round-trips knots and km/h", () => {
-    expect(knotsToKmh(10)).toBeCloseTo(18.52);
-    expect(kmhToKnots(knotsToKmh(17))).toBeCloseTo(17);
-  });
-});
-
 describe("local time helpers", () => {
   it("adds hours across midnight and month ends without touching time zones", () => {
     expect(addHours("2026-11-06T23:00", 1)).toBe("2026-11-07T00:00");
@@ -105,7 +92,8 @@ describe("local time helpers", () => {
 
   it("resolves day names relative to the forecast's own today", () => {
     expect(resolveDay("today", "2026-11-06")).toBe("2026-11-06");
-    expect(resolveDay("Tomorrow", "2026-11-06")).toBe("2026-11-07");
+    expect(resolveDay("tomorrow", "2026-11-06")).toBe("2026-11-07");
+    expect(resolveDay("tomorrow", "2026-12-31")).toBe("2027-01-01");
     expect(resolveDay("2026-11-10", "2026-11-06")).toBe("2026-11-10");
     expect(() => resolveDay("next friday", "2026-11-06")).toThrow(/Unrecognised day/);
   });

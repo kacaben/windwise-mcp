@@ -36,6 +36,11 @@ export function upcoming<T extends { time: string }>(hours: readonly T[], curren
   return hours.filter((hour) => hour.time >= currentHour);
 }
 
+/** The most days Open-Meteo's forecast API will return. */
+export const MAX_FORECAST_DAYS = 16;
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
 /**
  * Open-Meteo's `forecast_days` counts calendar days from local midnight, so a
  * request for N days made in the evening covers far less than N * 24 hours from
@@ -64,17 +69,15 @@ export function inHourRange(time: string, startHour: number, endHour: number): b
 
 /**
  * Resolve "today", "tomorrow" or "YYYY-MM-DD" against the forecast's own
- * notion of today (its first local date), not the server's clock.
+ * notion of today (its first local date), not the server's clock. The tool
+ * input schema already restricts `day` to these forms.
  */
 export function resolveDay(day: string, forecastToday: string): string {
-  const value = day.trim().toLowerCase();
-  if (value === "today") return forecastToday;
-  if (value === "tomorrow") return addDays(forecastToday, 1);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  if (day === "today") return forecastToday;
+  if (day === "tomorrow") return addDays(forecastToday, 1);
+  if (ISO_DATE.test(day)) return day;
   throw new ToolInputError(`Unrecognised day "${day}". Use "today", "tomorrow" or a date like 2026-11-07.`);
 }
-
-export const MAX_FORECAST_DAYS = 16;
 
 /**
  * How many forecast days to request so that `day` is covered, without always
@@ -82,11 +85,10 @@ export const MAX_FORECAST_DAYS = 16;
  * way, so explicit dates get one day of slack.
  */
 export function forecastDaysFor(day: string, now: Date = new Date()): number {
-  const value = day.trim().toLowerCase();
-  if (value === "today") return 1;
-  if (value === "tomorrow") return 2;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return 1; // resolveDay will reject it
+  if (day === "today") return 1;
+  if (day === "tomorrow") return 2;
+  if (!ISO_DATE.test(day)) return 1; // resolveDay will reject it
   const utcToday = now.toISOString().slice(0, 10);
-  const daysAhead = Math.round((Date.parse(value) - Date.parse(utcToday)) / 86_400_000);
+  const daysAhead = Math.round((Date.parse(day) - Date.parse(utcToday)) / 86_400_000);
   return Math.min(MAX_FORECAST_DAYS, Math.max(1, daysAhead + 2));
 }

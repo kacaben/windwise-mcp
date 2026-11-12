@@ -202,12 +202,12 @@ describe("WindWise MCP server", () => {
     await call(c, "get_weather_summary", { location: "Bucerias", day: "tomorrow" });
     expect(service.weatherRequests).toEqual([
       { days: 2, cell: "land" },
-      { days: 4, cell: "sea" }, // 3 days from now needs 3 + 1 calendar days (#1)
+      { days: 4, cell: "sea" }, // 3 days from now needs 3 + 1 calendar days
       { days: 2, cell: "sea" },
     ]);
   });
 
-  it("covers the full number of days from now, not calendar days (#1)", async () => {
+  it("covers the full number of days from now, not calendar days", async () => {
     // 22:30 local: a calendar-day request for 1 day would leave only 2 hours.
     const weather = [
       ...weatherDay("2026-11-06", { 22: 14, 23: 14 }),
@@ -231,7 +231,7 @@ describe("WindWise MCP server", () => {
     expect(JSON.stringify(windows.data)).not.toContain("2026-11-08T09:00");
   });
 
-  it("uses the same from-now window for marine conditions (#1)", async () => {
+  it("uses the same from-now window for marine conditions", async () => {
     const marine = [...marineDay("2026-11-06", 0.5), ...marineDay("2026-11-07", 0.5)];
     const requested: number[] = [];
     const service = fakeService({ weather: breezyDay, marine, now: "2026-11-06T20:10" });
@@ -248,7 +248,7 @@ describe("WindWise MCP server", () => {
     expect(data.hourly.at(-1).time).toBe("2026-11-07T19:00");
   });
 
-  it("get_weather_summary blames the wind direction, not 'short stretches' (#3)", async () => {
+  it("get_weather_summary blames the wind direction, not 'short stretches'", async () => {
     // 15 kn all day, but from the east, and the user only accepts westerlies.
     const weather = weatherDay(
       "2026-11-07",
@@ -265,7 +265,7 @@ describe("WindWise MCP server", () => {
     expect(data.reasons[0]).toMatch(/direction you excluded/);
   });
 
-  it("get_weather_summary flags unknown sea state when the marine call fails (#2)", async () => {
+  it("get_weather_summary flags unknown sea state when the marine call fails", async () => {
     const c = await connect(
       fakeService({ weather: breezyDay, marine: new OpenMeteoError("boom", "timeout") }),
     );
@@ -275,7 +275,7 @@ describe("WindWise MCP server", () => {
     expect(data.marine.unavailable).toMatch(/Open-Meteo is unavailable/);
   });
 
-  it("get_weather_summary explains the preset conflict instead of a bare range error (#4)", async () => {
+  it("get_weather_summary explains the preset conflict instead of a bare range error", async () => {
     const c = await connect(fakeService({ weather: breezyDay }));
     const { isError, text } = await call(c, "get_weather_summary", {
       location: "Bucerias",
@@ -324,5 +324,138 @@ describe("WindWise MCP server", () => {
     const { isError, text } = await call(c, "get_marine_conditions", { latitude: 48.85, longitude: 2.35 });
     expect(isError).toBe(true);
     expect(text).toMatch(/no marine data for this point/);
+  });
+
+  it("tells the model when Open-Meteo's response format changed, and logs the details", async () => {
+    const broken = fakeService({ weather: breezyDay });
+    broken.getWeather = async () => {
+      throw new OpenMeteoError(
+        "forecast response has an unexpected shape: hourly.wind_speed_10m",
+        "invalid_response",
+      );
+    };
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const c = await connect(broken);
+    const { isError, text } = await call(c, "get_weather", { location: "Bucerias" });
+    expect(isError).toBe(true);
+    expect(text).toMatch(/format WindWise does not recognise.*Retrying will not help/);
+    expect(text).not.toMatch(/wind_speed_10m/);
+    expect(log).toHaveBeenCalledWith(
+      "[windwise-mcp] unexpected Open-Meteo response:",
+      expect.stringContaining("wind_speed_10m"),
+    );
+    log.mockRestore();
+  });
+});
+
+describe("get_weather", () => {
+  it("returns current conditions and the next N hours in words and compass points", async () => {
+    const weather = weatherDay("2026-11-07", { 10: 12, 11: 14 }, { weatherCode: 3, windDirectionDeg: 225 });
+    const c = await connect(fakeService({ weather, now: "2026-11-07T10:15" }));
+    const { data } = await call(c, "get_weather", { location: "Bucerias", hours: 3 });
+
+    expect(data.current).toMatchObject({
+      time: "2026-11-07T10:15",
+      conditions: "overcast",
+      windDirection: "SW",
+    });
+    expect(data.hourly.map((h: { time: string }) => h.time)).toEqual([
+      "2026-11-07T10:00",
+      "2026-11-07T11:00",
+      "2026-11-07T12:00",
+    ]);
+    expect(data.hourly[1]).toMatchObject({
+      windKn: 14,
+      gustKn: 18,
+      rainChancePct: 0,
+      conditions: "overcast",
+    });
+    expect(data.units).toEqual({ wind: "knots", temperature: "°C", precipitation: "mm" });
+    expect(data.caveat).toMatch(/Model forecast/);
+  });
+});
+
+describe("get_marine_conditions", () => {
+  it("rates each day and returns hourly waves within the hour range", async () => {
+    const marine = [...marineDay("2026-11-07", 0.5, 12), ...marineDay("2026-11-08", 1.0, 4)];
+    const c = await connect(fakeService({ weather: breezyDay, marine, now: "2026-11-07T08:00" }));
+    const { data } = await call(c, "get_marine_conditions", {
+      location: "Bucerias",
+      days: 2,
+      start_hour: 9,
+      end_hour: 17,
+    });
+
+    expect(data.daily).toMatchObject([
+      { date: "2026-11-07", maxWaveHeightM: 0.5, assessment: { seaState: "small", beginnerFriendly: true } },
+      // 1 m of 4-second chop is rated one level above 1 m of swell.
+      { date: "2026-11-08", maxWaveHeightM: 1, assessment: { seaState: "large", beginnerFriendly: false } },
+    ]);
+    expect(data.hourly).toHaveLength(16); // 09:00-16:00 on both days
+    expect(data.hourly[0]).toMatchObject({ time: "2026-11-07T09:00", swellDirection: "W" });
+    expect(data.caveat).toMatch(/5 km resolution/);
+  });
+});
+
+describe("compare_locations", () => {
+  const spots = { locations: ["Bucerias", "Lake Chapala"], day: "2026-11-07" };
+
+  it("names spots without wave data and drops the marine caveat when nobody has waves", async () => {
+    const c = await connect(fakeService({ weather: breezyDay, marine: new NoMarineDataError() }));
+    const { data } = await call(c, "compare_locations", spots);
+    expect(data.ranking).toHaveLength(2);
+    expect(data.notes).toContain(
+      "No wave height for Lake Chapala: no marine data (inland or sheltered water).",
+    );
+    expect(data.notes.join(" ")).not.toMatch(/5 km resolution/);
+  });
+
+  it("logs an unexpected marine error instead of swallowing it, and still ranks the spot", async () => {
+    const service = fakeService({ weather: breezyDay, marine: marineDay("2026-11-07", 0.6) });
+    const original = service.getMarine.bind(service);
+    service.getMarine = async (location, days) => {
+      if (location.name === "Lake Chapala") throw new TypeError("Cannot read properties of undefined");
+      return original(location, days);
+    };
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const c = await connect(service);
+    const { data } = await call(c, "compare_locations", spots);
+
+    expect(data.ranking).toHaveLength(2);
+    expect(data.notes.join(" ")).toMatch(
+      /No wave height for Lake Chapala: WindWise hit an unexpected internal error/,
+    );
+    expect(data.notes.join(" ")).toMatch(/5 km resolution/); // Bucerias still has wave data
+    expect(log).toHaveBeenCalledWith("[windwise-mcp] unexpected error:", expect.any(TypeError));
+    log.mockRestore();
+  });
+
+  it("reports no single date when 'today' falls on different dates in different time zones", async () => {
+    const service = fakeService({ weather: breezyDay, marine: marineDay("2026-11-06", 0.6) });
+    const original = service.getWeather.bind(service);
+    // Bucerias is still on the 6th; Kiritimati (UTC+14) is already on the 7th.
+    service.getWeather = async (location, request) => {
+      const forecast = await original(location, request);
+      return location.name === "Kiritimati"
+        ? { ...forecast, hours: forecast.hours.slice(24), currentHour: "2026-11-07T08:00" }
+        : forecast;
+    };
+    const c = await connect(service);
+    const { data } = await call(c, "compare_locations", {
+      locations: ["Bucerias", "Kiritimati"],
+      day: "today",
+      include_marine: false,
+    });
+
+    expect(data.date).toBeNull();
+    expect(data.ranking.map((r: { date: string }) => r.date).sort()).toEqual(["2026-11-06", "2026-11-07"]);
+    expect(data.notes[0]).toMatch(/different time zones, so "today" means different dates/);
+  });
+
+  it("reports the date when every spot agrees", async () => {
+    const c = await connect(fakeService({ weather: breezyDay }));
+    const { data } = await call(c, "compare_locations", { ...spots, include_marine: false });
+    expect(data.date).toBe("2026-11-07");
+    expect(data.notes.join(" ")).not.toMatch(/different time zones/);
   });
 });

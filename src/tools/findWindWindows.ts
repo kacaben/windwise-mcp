@@ -2,17 +2,10 @@ import type { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod";
 import { FORECAST_CAVEAT } from "../domain/disclaimers.js";
 import { forecastDaysAhead, inHourRange, withinNextDays } from "../domain/time.js";
-import {
-  explainRejections,
-  findWindWindows,
-  type WindCriteria,
-  type WindWindow,
-  windRow,
-} from "../domain/wind.js";
+import { bestWindow, explainRejections, findWindWindows, peakHour, windRow } from "../domain/wind.js";
 import type { WeatherService } from "../openmeteo/client.js";
 import { findWindWindowsOutput as outputSchema } from "./outputs.js";
 import {
-  assertHourRange,
   compassDirections,
   describeLocation,
   endHour,
@@ -22,7 +15,7 @@ import {
   safely,
   startHour,
   windCriteriaFields,
-  windRangeFrom,
+  windSearch,
   withLocation,
 } from "./shared.js";
 
@@ -37,19 +30,6 @@ const inputSchema = withLocation({
     .default(true)
     .describe("Never count hours with forecast thunderstorms as rideable."),
 });
-
-/** Longest window wins; ties go to the stronger average wind. */
-export function bestWindow(windows: readonly WindWindow[]): WindWindow | null {
-  return windows.reduce<WindWindow | null>(
-    (best, w) =>
-      !best ||
-      w.durationHours > best.durationHours ||
-      (w.durationHours === best.durationHours && w.avgWindKn > best.avgWindKn)
-        ? w
-        : best,
-    null,
-  );
-}
 
 export function registerFindWindWindows(server: McpServer, service: WeatherService) {
   server.registerTool(
@@ -67,8 +47,7 @@ export function registerFindWindWindows(server: McpServer, service: WeatherServi
       annotations: READ_ONLY,
     },
     safely(async (args) => {
-      assertHourRange(args.start_hour, args.end_hour);
-      const range = windRangeFrom(args);
+      const { activity, criteria, windRangeKn } = windSearch(args);
 
       const location = await service.resolveLocation(args);
       const forecast = await service.getWeather(location, {
@@ -77,35 +56,16 @@ export function registerFindWindWindows(server: McpServer, service: WeatherServi
       });
       const ahead = withinNextDays(forecast.hours, forecast.currentHour, args.days);
 
-      const criteria: WindCriteria = {
-        minWindKn: range.minWindKn,
-        maxWindKn: range.maxWindKn,
-        maxGustKn: range.maxGustKn,
-        startHour: args.start_hour,
-        endHour: args.end_hour,
-        directions: args.directions,
-        minWindowHours: args.min_window_hours,
-        excludeThunderstorms: args.exclude_thunderstorms,
-      };
-
       const windows = findWindWindows(ahead, criteria);
-      const strongest = ahead
-        .filter((h) => inHourRange(h.time, criteria.startHour, criteria.endHour))
-        .reduce<(typeof ahead)[number] | null>(
-          (best, h) => (h.windKn !== null && (best?.windKn ?? -1) < h.windKn ? h : best),
-          null,
-        );
+      const strongest = peakHour(
+        ahead.filter((h) => inHourRange(h.time, criteria.startHour, criteria.endHour)),
+      );
 
       return jsonResult(outputSchema, {
         location: describeLocation(location, forecast.timezone),
         criteria: {
-          activity: range.activity,
-          windRangeKn: {
-            min: range.minWindKn,
-            max: range.maxWindKn ?? null,
-            maxGust: range.maxGustKn ?? null,
-            minWindowHours: args.min_window_hours,
-          },
+          activity,
+          windRangeKn,
           startHour: args.start_hour,
           endHour: args.end_hour,
           days: args.days,

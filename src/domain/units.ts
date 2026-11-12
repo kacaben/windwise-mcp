@@ -65,10 +65,6 @@ export function beaufort(knots: number): { force: number; description: string } 
     : { force: index, description: BEAUFORT[index]![1] };
 }
 
-export const KMH_PER_KNOT = 1.852;
-export const knotsToKmh = (knots: number) => knots * KMH_PER_KNOT;
-export const kmhToKnots = (kmh: number) => kmh / KMH_PER_KNOT;
-
 export function round(value: number, digits = 1): number {
   const factor = 10 ** digits;
   return Math.round(value * factor) / factor;

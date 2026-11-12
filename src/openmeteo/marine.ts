@@ -1,6 +1,8 @@
+import * as z from "zod";
 import { localHourNow } from "../domain/time.js";
-import { type Columns, columnsToRows } from "./columns.js";
+import { columnsToRows } from "./columns.js";
 import { getJson, type HttpOptions } from "./http.js";
+import { hourlyColumns, parseResponse } from "./schemas.js";
 
 const MARINE_URL = "https://marine-api.open-meteo.com/v1/marine";
 
@@ -41,13 +43,13 @@ export interface MarineForecast {
   hours: MarineHour[];
 }
 
-interface MarineResponse {
-  latitude: number;
-  longitude: number;
-  timezone: string;
-  utc_offset_seconds: number;
-  hourly: Columns;
-}
+const marineResponse = z.object({
+  latitude: z.number(),
+  longitude: z.number(),
+  timezone: z.string(),
+  utc_offset_seconds: z.number(),
+  hourly: hourlyColumns(HOURLY_VARIABLES),
+});
 
 export class NoMarineDataError extends Error {
   constructor() {
@@ -64,7 +66,7 @@ export async function fetchMarineForecast(
   days: number,
   http: HttpOptions = {},
 ): Promise<MarineForecast> {
-  const response = await getJson<MarineResponse>(
+  const body = await getJson<unknown>(
     MARINE_URL,
     {
       latitude: coords.latitude,
@@ -77,6 +79,7 @@ export async function fetchMarineForecast(
     },
     http,
   );
+  const response = parseResponse(marineResponse, body, "marine");
 
   const hours = columnsToRows(response.hourly, HOURLY_VARIABLES).map(
     (row): MarineHour => ({

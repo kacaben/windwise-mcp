@@ -10,8 +10,8 @@ import {
 } from "../domain/activities.js";
 import { ATTRIBUTION } from "../domain/disclaimers.js";
 import { ToolInputError } from "../domain/errors.js";
-import { COMPASS_POINTS } from "../domain/units.js";
-import { DEFAULT_MIN_WINDOW_HOURS } from "../domain/wind.js";
+import { COMPASS_POINTS, type CompassPoint } from "../domain/units.js";
+import { DEFAULT_MIN_WINDOW_HOURS, type WindCriteria } from "../domain/wind.js";
 import type { ResolvedLocation } from "../openmeteo/client.js";
 import { LocationNotFoundError } from "../openmeteo/geocoding.js";
 import { OpenMeteoError } from "../openmeteo/http.js";
@@ -138,22 +138,55 @@ export const windCriteriaFields = {
   min_window_hours: minWindowHours,
 };
 
-export function windRangeFrom(args: {
+export function assertHourRange(start: number, end: number) {
+  if (end <= start) throw new ToolInputError(`end_hour (${end}) must be after start_hour (${start}).`);
+}
+
+/** The arguments every wind-range tool shares, as parsed by its input schema. */
+export interface WindSearchArgs {
   activity?: Activity | undefined;
   min_wind_knots?: number | undefined;
   max_wind_knots?: number | undefined;
   max_gust_knots?: number | undefined;
-}) {
-  return resolveWindRange({
+  min_window_hours: number;
+  start_hour: number;
+  end_hour: number;
+  directions?: readonly CompassPoint[] | undefined;
+  /** Defaults to true: thunderstorm hours never count as rideable. */
+  exclude_thunderstorms?: boolean | undefined;
+}
+
+/**
+ * Validate and resolve the shared wind arguments once, for find_wind_windows,
+ * compare_locations and get_weather_summary, so the three tools agree on what
+ * a usable session is and report the range the same way.
+ */
+export function windSearch(args: WindSearchArgs) {
+  assertHourRange(args.start_hour, args.end_hour);
+  const range = resolveWindRange({
     activity: args.activity,
     minWindKn: args.min_wind_knots,
     maxWindKn: args.max_wind_knots,
     maxGustKn: args.max_gust_knots,
   });
-}
-
-export function assertHourRange(start: number, end: number) {
-  if (end <= start) throw new ToolInputError(`end_hour (${end}) must be after start_hour (${start}).`);
+  const criteria: WindCriteria = {
+    minWindKn: range.minWindKn,
+    maxWindKn: range.maxWindKn,
+    maxGustKn: range.maxGustKn,
+    startHour: args.start_hour,
+    endHour: args.end_hour,
+    directions: args.directions,
+    minWindowHours: args.min_window_hours,
+    excludeThunderstorms: args.exclude_thunderstorms ?? true,
+  };
+  /** How the range is echoed back in every tool's output. */
+  const windRangeKn = {
+    min: range.minWindKn,
+    max: range.maxWindKn ?? null,
+    maxGust: range.maxGustKn ?? null,
+    minWindowHours: args.min_window_hours,
+  };
+  return { activity: range.activity, criteria, windRangeKn };
 }
 
 // ---------------------------------------------------------------------------
@@ -205,9 +238,19 @@ export function errorMessage(error: unknown): string {
     return error.message;
   }
   if (error instanceof OpenMeteoError) {
-    return error.kind === "bad_request"
-      ? `Open-Meteo rejected the request: ${error.message}`
-      : `Open-Meteo is unavailable right now (${error.message}). Try again shortly.`;
+    switch (error.kind) {
+      case "bad_request":
+        return `Open-Meteo rejected the request: ${error.message}`;
+      case "invalid_response":
+        // The API changed under us: the developer needs the details, the model does not.
+        console.error("[windwise-mcp] unexpected Open-Meteo response:", error.message);
+        return (
+          "Open-Meteo answered in a format WindWise does not recognise, so the forecast could not " +
+          "be read. Retrying will not help; the details were logged on the server."
+        );
+      default:
+        return `Open-Meteo is unavailable right now (${error.message}). Try again shortly.`;
+    }
   }
   // stdout is the MCP channel; diagnostics go to stderr.
   console.error("[windwise-mcp] unexpected error:", error);

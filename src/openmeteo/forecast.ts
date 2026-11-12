@@ -1,6 +1,8 @@
+import * as z from "zod";
 import { floorToHour } from "../domain/time.js";
-import { type Columns, columnsToRows } from "./columns.js";
+import { columnsToRows } from "./columns.js";
 import { getJson, type HttpOptions } from "./http.js";
+import { currentValues, hourlyColumns, parseResponse } from "./schemas.js";
 
 const FORECAST_URL = "https://api.open-meteo.com/v1/forecast";
 
@@ -53,13 +55,13 @@ export interface WeatherForecast {
   hours: WeatherHour[];
 }
 
-interface ForecastResponse {
-  latitude: number;
-  longitude: number;
-  timezone: string;
-  current: Record<string, unknown> & { time: string };
-  hourly: Columns;
-}
+const forecastResponse = z.object({
+  latitude: z.number(),
+  longitude: z.number(),
+  timezone: z.string(),
+  current: currentValues(CURRENT_VARIABLES),
+  hourly: hourlyColumns(HOURLY_VARIABLES),
+});
 
 const num = (value: unknown): number | null =>
   typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -81,7 +83,7 @@ export async function fetchWeatherForecast(
   { days, cell = "land" }: ForecastRequest,
   http: HttpOptions = {},
 ): Promise<WeatherForecast> {
-  const response = await getJson<ForecastResponse>(
+  const body = await getJson<unknown>(
     FORECAST_URL,
     {
       latitude: coords.latitude,
@@ -95,6 +97,7 @@ export async function fetchWeatherForecast(
     },
     http,
   );
+  const response = parseResponse(forecastResponse, body, "forecast");
 
   const hours = columnsToRows(response.hourly, HOURLY_VARIABLES).map(
     (row): WeatherHour => ({

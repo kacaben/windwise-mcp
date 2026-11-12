@@ -1,11 +1,32 @@
 import { describe, expect, it } from "vitest";
 import {
+  bestWindow,
   explainRejections,
   findWindWindows,
+  peakHour,
   summarizeWindByDay,
   type WindCriteria,
 } from "../src/domain/wind.js";
 import { weatherDay } from "./helpers.js";
+
+describe("peakHour", () => {
+  it("picks the strongest hour, the earliest on a tie, and skips missing data", () => {
+    const hours = weatherDay("2026-11-07", { 10: 14, 12: 16, 15: 16 });
+    hours[13]!.windKn = null;
+    expect(peakHour(hours)?.time).toBe("2026-11-07T12:00");
+    expect(peakHour([])).toBeNull();
+    expect(peakHour(hours.map((h) => ({ ...h, windKn: null })))).toBeNull();
+  });
+});
+
+describe("bestWindow", () => {
+  it("prefers the longest window, then the stronger average wind", () => {
+    const hours = weatherDay("2026-11-07", { 9: 13, 10: 13, 12: 15, 13: 15, 15: 20 });
+    const windows = findWindWindows(hours, criteria());
+    expect(bestWindow(windows)?.start).toBe("2026-11-07T12:00");
+    expect(bestWindow([])).toBeNull();
+  });
+});
 
 const criteria = (overrides: Partial<WindCriteria> = {}): WindCriteria => ({
   minWindKn: 12,
